@@ -21,7 +21,7 @@ Rays are sent from every pixel following a solid angle uniform sampling, and whe
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 1: Uniform sampling results across 1, 50, 128 and 256 rays per pixel</b>
+      <b>Figure 1: (Potato) Uniform sampling results across 1, 50, 128 and 256 rays per pixel</b>
     </td>
   </tr>
 </table>
