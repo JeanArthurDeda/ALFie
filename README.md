@@ -3,7 +3,7 @@ Area Light Framework for study
 
 This is a personal study of different methods of handling area lights.
 
-To skip steps (loading scene, creating renderer, etc.) I've hacked together a simple custom Blender renderer in Python, which, while slower, allowed me to play around with different methods without the side-hustle of loading test scenes.
+To skip steps (loading scene, creating renderer, etc.) I've hacked together a simple custom Blender renderer in Python, which, while slower, allowed me to play around with different methods without the side-hustle of creating the base framework.
 
 A simplified rendering equation for direct lighting with Lambertian BRDF is solved via Monte Carlo. A few methods of sampling have been used.
 
