@@ -86,7 +86,7 @@ I've studied ReSTIR with 1 ray per pixel sampled via area importance sampling. T
 
 When merging spatial samples, to maintain 1 ray per pixel, the visibility of the sample was re-used and not recomputed.
 
-Even with this naive implementation, merging temporal and spatial samples with only 1 new ray per pixel for the current frame sample gives amazing results.
+Even with this potato implementation, merging temporal and spatial samples with only 1 new ray per pixel in the reservoir, ReSTIR-lite gives amazing results.
 
 <table>
   <tr>
