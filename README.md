@@ -82,7 +82,7 @@ Since area lights sampling is the workhorse, the cosine sampling contribution is
 </table>
 
 ## Resampling Sampling - ReSTIR lite - 1 Ray per Pixel
-I've studied ReSTIR with 1 ray per pixel sampled via area importance sampling. To test different aspects of it, I've implemented a version where the pixel reservoir contains the entire temporal historical data. This is different from pure ReSTIR, where the reservoir is collapsed and only the champion sample is kept along with radiance and other data. With all the temporal samples present in the reservoir, I could test the visual impact of recomputing PDF and cos(theta) when merging a spatial sample. The difference was not noticeable.
+I've studied ReSTIR with 1 ray per pixel sampled via area importance sampling. To test different aspects of it, I've implemented a version where the pixel reservoir contains the entire temporal historical data. This is different from pure ReSTIR, where the reservoir is collapsed and only the champion sample is kept along with radiance and other data. With all the temporal samples present in the reservoir, I could test the visual impact of recomputing PDF and cos(theta) when merging a spatial sample. The difference was minimal.
 
 When merging spatial samples, to maintain 1 ray per pixel, the visibility of the sample was re-used and not recomputed.
 
@@ -128,3 +128,5 @@ Randomly dropping spatial samples improves performance, removes radiance spots, 
     </td>
   </tr>
 </table>
+
+The main difference, which is quite hard to notice is that with recomputation of the PDF and cos(theta) of each merging sample, the lighting cuts more correctly on the floor near each area light, while without it a rather small soft fading is observed.
