@@ -3,7 +3,7 @@ Area Light Framework for study
 
 This is a personal study of different methods of handling area lights.
 
-To skip steps (loading scene, creating renderer, etc.) I've hacked together a simple custom Blender renderer in Python, which, while slower, allowed me to play around with different methods without the side-hustle of creating the base framework.
+To skip steps (loading scene, creating renderer, etc.) I've hacked a simple custom Blender renderer in Python, which, while slower, allowed me to play around with different methods without the side-hustle of creating the base framework.
 
 A simplified rendering equation for direct lighting with Lambertian BRDF is solved via Monte Carlo. A few methods of sampling have been used.
 
@@ -124,9 +124,11 @@ Randomly dropping spatial samples improves performance, removes radiance spots, 
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 7: Left: ReSTIR collapsed, Right: ReSTIR historical with recomputation of PDF and cos(theta)</b>
+      <b>Figure 7: Left: Re-using PDF and cos(theta), Right: Recomputation of PDF and cos(theta) for each historical sample</b>
     </td>
   </tr>
 </table>
 
-The main difference, which is quite hard to notice is that with recomputation of the PDF and cos(theta) of each merging sample, the lighting cuts more correctly on the floor near each area light, while without it a rather small soft fading is observed.
+The main difference—subtle but noticeable—is that recomputing both the PDF and cos(theta) for each merged sample produces sharper light cutoffs on the floor near each area light. Without recomputation, a soft fading effect appears. While recomputing the PDF contributes to this change, the sharper gradient is primarily driven by the recomputation of cos(theta).
+
+In collapsed ReSTIR, only a single champion sample is kept, and its cos(theta) is already recomputed, making the difference even smaller. To also recompute the PDF for the champion sample, you would need to store the area light's area and weight alongside the sample in the reservoir. Visually, it's not worth the extra cost—in my humble opinion.
