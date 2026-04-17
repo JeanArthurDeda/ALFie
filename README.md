@@ -25,7 +25,8 @@ Rays are sent from every pixel following a solid angle uniform sampling, and whe
     </td>
   </tr>
 </table>
-
+[!NOTE]
+The top face of the cube is not lit correctly because when I generated the screenshots I've, wrongly, used the potato uniform sampler with the right solid angle PDF. Sorry, me potato.
 ## Direct Sampling - Cosine sampling
 Rays are distributed via a cosine PDF which, in combination with Lambertian BRDF, results in a much simpler implementation as the BRDF cancels out.
 
