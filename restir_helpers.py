@@ -1,9 +1,9 @@
 import bpy
 import math
+from restir_core import cross, normalize, add, sub, length, dot, mul, mul_s
 
 # this doesn't work on multi process rendering
 # from mathutils import Vector
-# from restir_core import cross, normalize, add, sub, length, dot, mul, mul_s
 
 # def segment_visibility_world_fast(s, e):
 #     start = Vector(s)
