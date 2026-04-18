@@ -117,6 +117,8 @@ Randomly dropping spatial samples improves performance, removes radiance spots, 
   </tr>
 </table>
 
+Reusing PDF and cos(theta)
+
 <table>
   <tr>
     <td><img src="./results/ReSTIR-lite-collapsed.png" width="100%"></td>
@@ -130,3 +132,21 @@ Randomly dropping spatial samples improves performance, removes radiance spots, 
 </table>
 
 The main difference—subtle but noticeable—is that recomputing both the PDF and cos(theta) for each merged sample produces sharper light cutoffs on the floor near each area light. Without recomputation, a soft fading effect appears. While recomputing the PDF contributes to this change, the sharper gradient is primarily driven by the recomputation of cos(theta).
+
+Temporal vs Spatial Resampling
+
+<table>
+  <tr>
+    <td><img src="./results/ReSTIR_lite-49-temporal.png" width="100%"></td>
+    <td><img src="./results/ReSTIR_lite-49-spatial.png" width="100%"></td>
+  </tr>
+  <tr>
+    <td colspan="4" align="center">
+      <b>Figure 8: Left: Temporal resampling only (50 samples), Right: Spatial resampling with visibilty recomputed (50 samples)</b>
+    </td>
+  </tr>
+</table>
+
+Temporal resampling kicks socks off and has many advantages over spatial sampling. Since it shares the exact BDRF, Li, [V] with the main pixel, the samples are already best fit for resampling.
+
+
