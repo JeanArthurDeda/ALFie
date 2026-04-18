@@ -130,5 +130,3 @@ Randomly dropping spatial samples improves performance, removes radiance spots, 
 </table>
 
 The main difference—subtle but noticeable—is that recomputing both the PDF and cos(theta) for each merged sample produces sharper light cutoffs on the floor near each area light. Without recomputation, a soft fading effect appears. While recomputing the PDF contributes to this change, the sharper gradient is primarily driven by the recomputation of cos(theta).
-
-In collapsed ReSTIR, only a single champion sample is kept, and its cos(theta) is already recomputed, making the difference even smaller. To also recompute the PDF for the champion sample, you would need to store the area light's area and weight alongside the sample in the reservoir. Visually, it's not worth the extra cost—in my humble opinion.
