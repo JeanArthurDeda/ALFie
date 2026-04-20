@@ -1,5 +1,16 @@
 # ALFie
-Area Light Framework for study
+Area Light Framework !WIP! (for personal study)
+
+<table align="center" width="100%">
+  <tr>
+    <td width="20%"></td>
+    <td align="center" width="60%">
+      <img src="./results/rendering_equation.png" width="100%">
+    </td>
+    <td width="20%"></td>
+  </tr>
+</table>
+
 
 This is a personal study of different methods of handling area lights.
 
