@@ -112,7 +112,7 @@ Even with this potato implementation, merging temporal and spatial samples with 
   </tr>
 </table>
 
-Randomly dropping spatial samples improves performance, removes radiance spots, and adds noise, for which a denoiser can be used to achieve smooth results.
+Russian Roullete for spatial merging improves performance, removes radiance spots, and adds noise, for which a denoiser can be used to achieve smooth results.
 
 <table>
   <tr>
