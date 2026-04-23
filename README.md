@@ -1,5 +1,5 @@
 # ALFie
-Area Light Framework !WIP! (for personal study)
+Area Light Framework !WIP!
 
 <table align="center" width="100%">
   <tr>
