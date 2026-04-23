@@ -374,7 +374,7 @@ def destroy_samplers():
 
 
 # ===========================================================
-# Radiance via Monte Carlor solving of the rendering equation
+# Radiance via Monte Carlo solving of the rendering equation
 # ===========================================================
 
 # radiance output from solving the rendering equation with 1 Monte Carlo Sampler and Lamber BDRF

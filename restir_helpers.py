@@ -2,20 +2,6 @@ import bpy
 import math
 from restir_core import cross, normalize, add, sub, length, dot, mul, mul_s
 
-# this doesn't work on multi process rendering
-# from mathutils import Vector
-
-# def segment_visibility_world_fast(s, e):
-#     start = Vector(s)
-#     end = Vector(e)
-#     d = (end - start).length
-#     dir = (end - start) / d
-
-#     scene = bpy.context.scene
-#     depsgraph = bpy.context.evaluated_depsgraph_get()
-#     result, location, normal, index, obj, matrix = scene.ray_cast(depsgraph, start, dir, distance=d)
-#     return result
-
 def generate_cached_mesh(instance):
     def get_material(mat):
         if not mat.use_nodes: return (1.0, 1.0, 1.0, 1.0), (0.0, 0.0, 0.0)

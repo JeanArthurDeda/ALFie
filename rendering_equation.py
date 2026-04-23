@@ -242,9 +242,6 @@ def lambert_BDRF(kd):
     return kd / math.pi
 
 def phong_BRDF(wi, wr, N):
-    k_d = 1.0
-    diffuse = k_d * max(0, wi.dot(N)) / math.pi
-    
     k_s = 0.75
     shininess = 32.0
     
@@ -252,7 +249,7 @@ def phong_BRDF(wi, wr, N):
     
     specular = k_s * math.pow(max(0, R.dot(wr)), shininess) #(shininess + 2)/(2*math.pi)
     
-    return diffuse + specular
+    return specular
 
 def ggx_BDRF(wi, wo, N, F0, roughness):
     # Perfect mirror case (roughness = 0)
@@ -374,11 +371,11 @@ def monte_carlo_estimate(f, S):
 
 # Display BDRF, Li and Rendering equation
 
-ka = 1.0
+kd = 1.0
 roughness=0.5
 N = Vector((0,0,1))
 
-l_bdrf = lambda wi: lambert_BDRF(ka) + ggx_BDRF(wi, wo, N, 0.03, roughness=roughness)
+l_bdrf = lambda wi: lambert_BDRF(kd) + ggx_BDRF(wi, wo, N, 0.03, roughness=roughness)
 l_li = lambda wi: Li(wi, lights)
 l_f = lambda wi: l_bdrf(wi)*l_li(wi)*max(0, wi.z) # this is also the rendering equation
 hemi_project(l_bdrf, add_sphere(Vector((0, 0, 0)), "F_BDRF"))
@@ -387,7 +384,6 @@ hemi_project(l_f, add_sphere(Vector((0, 1.0, 0)), "F_F", mat= bpy.data.objects.g
 
 
 # Display samplers
-# GGX
 def div_pdf(f, pdf):
     if pdf < 0.0001: return 0.0
     return f / pdf
@@ -422,7 +418,6 @@ u_value = 0.0
 c_value = 0.0
 ggx_value = 0.0
 ris_value = 0.0
-print ("==================================")
 for i in range (average_count):
     U = [uniform_sample() for _ in range(num_samples)]
     C = [cosine_sample() for _ in range(num_samples)]
@@ -437,12 +432,6 @@ u_value /= average_count
 c_value /= average_count
 ggx_value /= average_count
 ris_value /= average_count
-
-print (f"\Final")
-print (f"u_value: {u_value}")
-print (f"c_value: {c_value}")
-print (f"ggx_value: {ggx_value}")
-print (f"ris_value: {ris_value}")
 
 add_text(Vector((-0.10, -0.2 + 1, 0.35)), "F_R_GT", f"GT\n{int(gt_value*10000)}", mat = lights[0].material_slots[0].material)
 add_text(Vector((-0.10, -0.2 + 1.5,0.35)), "F_R_U", f"U\n{int(u_value*10000)}", mat = lights[0].material_slots[0].material)
