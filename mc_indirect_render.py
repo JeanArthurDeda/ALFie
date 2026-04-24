@@ -161,22 +161,22 @@ class AreaLight:
 # Samplers ===================
 
 def uniform_sample(n):
-        u = random.uniform(0.0, 2.0 * math.pi)
-        cos_v = random.uniform(0.0, 1.0)
-        v = math.acos(cos_v)
+    u = random.uniform(0.0, 2.0 * math.pi)
+    cos_v = random.uniform(0.0, 1.0)
+    v = math.acos(cos_v)
 
-        x = math.sin(v) * math.cos(u)
-        y = math.sin(v) * math.sin(u) 
-        z = math.cos(v)
+    x = math.sin(v) * math.cos(u)
+    y = math.sin(v) * math.sin(u) 
+    z = math.cos(v)
 
-        pdf = 1.0 / (2.0 * math.pi)
-        
-        x_axis, y_axis = get_orthonormal_axis(n)
-        wi = x*x_axis + y*y_axis + z*n
+    pdf = 1.0 / (2.0 * math.pi)
+    
+    x_axis, y_axis = get_orthonormal_axis(n)
+    wi = x*x_axis + y*y_axis + z*n
 
-        cos_theta = z
+    cos_theta = z
 
-        return wi, pdf, cos_theta
+    return wi, pdf, cos_theta
 
 def uniform_pdf(p, n, wi):
     return 1.0 / (2.0 * math.pi)
@@ -204,26 +204,203 @@ def cosine_pdf(p, n, wi):
     if cos_theta <= 0.0: return 0
     return cos_theta / math.pi
 
+# GGX
+def build_tangent_frame(n: Vector):
+    if abs(n.z) < 0.999:
+        t = Vector((0.0, 0.0, 1.0)).cross(n).normalized()
+    else:
+        t = Vector((1.0, 0.0, 0.0)).cross(n).normalized()
+    b = n.cross(t)
+    return t, b
+def ggx_sample_vndf(wo: Vector, n: Vector, roughness: float):
+    """
+    GGX VNDF sampling (Heitz 2018).
+    Returns: wi, pdf
+    """
+
+    # Transform wo to local space
+    t, b = build_tangent_frame(n)
+    wo_local = Vector((
+        wo.dot(t),
+        wo.dot(b),
+        wo.dot(n)
+    )).normalized()
+
+    # Handle degenerate case
+    if wo_local.z <= 0.0:
+        return Vector((0, 0, 0)), 0.0, 0.0
+
+    # GGX alpha
+    alpha = roughness * roughness
+
+    # Stretch view direction
+    Vh = Vector((
+        alpha * wo_local.x,
+        alpha * wo_local.y,
+        wo_local.z
+    )).normalized()
+
+    # Orthonormal basis
+    lensq = Vh.x * Vh.x + Vh.y * Vh.y
+    if lensq > 0.0:
+        T1 = Vector((-Vh.y, Vh.x, 0.0)) / math.sqrt(lensq)
+        T2 = Vh.cross(T1)
+    else:
+        T1 = Vector((1.0, 0.0, 0.0))
+        T2 = Vector((0.0, 1.0, 0.0))
+
+    # Sample point on disk
+    u1 = random.random()
+    u2 = random.random()
+
+    r = math.sqrt(u1)
+    phi = 2.0 * math.pi * u2
+
+    t1 = r * math.cos(phi)
+    t2 = r * math.sin(phi)
+
+    # Warp t2
+    s = 0.5 * (1.0 + Vh.z)
+    t2 = (1.0 - s) * math.sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2
+
+    # Reproject onto hemisphere
+    Nh = (t1 * T1 + t2 * T2 + math.sqrt(max(0.0, 1.0 - t1*t1 - t2*t2)) * Vh)
+
+    # Unstretch
+    h_local = Vector((
+        alpha * Nh.x,
+        alpha * Nh.y,
+        max(0.0, Nh.z)
+    )).normalized()
+
+    # Transform back to world
+    h = (t * h_local.x + b * h_local.y + n * h_local.z).normalized()
+
+    # Reflect wo around h
+    wi = 2.0 * wo.dot(h) * h - wo
+    wi.normalize()
+
+    # Reject below surface
+    n_dot_wi = n.dot(wi)
+    if n_dot_wi <= 0.0:
+        return wi, 0.0, 0.0
+
+    # ---- PDF (VNDF-consistent) ----
+    n_dot_h = max(0.0, n.dot(h))
+    wo_dot_h = max(0.0, wo.dot(h))
+    n_dot_wo = max(0.0, n.dot(wo))
+
+    if wo_dot_h <= 0.0 or n_dot_wo <= 0.0:
+        return wi, 0.0, 0.0
+
+    # GGX D (consistent alpha usage)
+    alpha2 = alpha * alpha
+    denom = (n_dot_h * n_dot_h) * (alpha2 - 1.0) + 1.0
+    D = alpha2 / (math.pi * denom * denom)
+
+    # Smith G1 (only for wo)
+    def G1(n_dot_v):
+        if n_dot_v <= 0.0:
+            return 0.0
+        tan2 = (1.0 - n_dot_v * n_dot_v) / (n_dot_v * n_dot_v)
+        return 2.0 / (1.0 + math.sqrt(1.0 + alpha2 * tan2))
+
+    G1_wo = G1(n_dot_wo)
+
+    pdf = (D * G1_wo * wo_dot_h) / n_dot_wo
+
+    return wi, pdf, n_dot_wi
+
+
+def ggx_pdf_vndf(wi: Vector, wo: Vector, n: Vector, roughness: float) -> float:
+    """
+    PDF for GGX VNDF sampling (Heitz).
+
+    Args:
+        wi: incoming light direction (toward light)
+        wo: outgoing/view direction (toward camera)
+        n: surface normal
+        roughness: perceptual roughness
+
+    Returns:
+        pdf value (solid angle measure)
+    """
+
+    wi = wi.normalized()
+    wo = wo.normalized()
+    n = n.normalized()
+
+    n_dot_wi = n.dot(wi)
+    n_dot_wo = n.dot(wo)
+
+    # Must be above surface
+    if n_dot_wi <= 0.0 or n_dot_wo <= 0.0:
+        return 0.0
+
+    # Half-vector
+    h = (wi + wo)
+    if h.length_squared == 0.0:
+        return 0.0
+    h.normalize()
+
+    n_dot_h = max(0.0, n.dot(h))
+    wo_dot_h = max(0.0, wo.dot(h))
+
+    if n_dot_h <= 0.0 or wo_dot_h <= 0.0:
+        return 0.0
+
+    # --- GGX parameters ---
+    alpha = roughness * roughness
+    alpha2 = alpha * alpha
+
+    # --- GGX NDF (D) ---
+    denom = (n_dot_h * n_dot_h) * (alpha2 - 1.0) + 1.0
+    D = alpha2 / (math.pi * denom * denom)
+
+    # --- Smith G1 for wo only ---
+    def G1(n_dot_v):
+        if n_dot_v <= 0.0:
+            return 0.0
+        tan2 = (1.0 - n_dot_v * n_dot_v) / (n_dot_v * n_dot_v)
+        return 2.0 / (1.0 + math.sqrt(1.0 + alpha2 * tan2))
+
+    G1_wo = G1(n_dot_wo)
+
+    # --- VNDF PDF ---
+    pdf = (D * G1_wo * wo_dot_h) / n_dot_wo
+
+    return max(0.0, pdf)
+
 SAMPLER_DISTANCE = 20.0
 SAMPLER_BIAS = 0.001
 class Sampler(ABC):
     # in case the sampler supports sampling from a unnormalized uniform pdf or target function. RIS supports sampling from target pdf
     # target_pdf (wi, cos_theta) -> float
-    target_pdf = None
+    param_target_pdf = None
+    # some samplers (GGX) needs the current material
+    param_mat = None
+
+    samplers = []
+
+    def set_params(self, param_target_pdf, param_mat):
+        self.param_target_pdf = param_target_pdf
+        self.param_mat = param_mat
+        for s in self.samplers:
+            s.set_params(param_target_pdf, param_mat)
 
     # return [(wi, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
     @abstractmethod
-    def samples(self, p, n, num):
+    def samples(self, p, n, wo, num):
         pass
     # return pdf
     @abstractmethod
-    def pdf(self, p, n, wi):
+    def pdf(self, p, n, wo, wi):
         pass
     @abstractmethod
     def get_name(self):
         pass
 
-class GenericSampler(Sampler):
+class SimpleSampler(Sampler):
     sample_l = None
     pdf_l = None
     name = None
@@ -233,14 +410,14 @@ class GenericSampler(Sampler):
         self.pdf_l = pdf_l
         self.name = name
 
-    def samples (self, p, n, num):
+    def samples (self, p, n, wo, num):
         S = []
         for _ in range(num):
             wi, pdf, cos_theta = self.sample_l(n)
             S.append((wi, pdf, 1.0, cos_theta))
         return S
     
-    def pdf(self, p, n, wi):
+    def pdf(self, p, n, wo, wi):
         return self.pdf_l(p, n, wi)
 
     def get_name(self):
@@ -256,7 +433,7 @@ class AreaLightsImportanceSampler(Sampler):
         for l in self.area_lights:
             self.weight += l.weight
 
-    def samples(self, p, n, num):
+    def samples(self, p, n, wo, num):
         S = []
         for _ in range(num):
             l = self.area_lights[get_weighted_random_index(self.area_lights, self.weight, lambda l: l.weight)]
@@ -267,7 +444,7 @@ class AreaLightsImportanceSampler(Sampler):
             S.append((wi, pdf, 1.0, cos_theta))
         return S
     
-    def pdf(self, p, n, wi):
+    def pdf(self, p, n, wo, wi):
         pdf = 0.0
         for l in self.area_lights:
             hit, pos, nor = l.ray_trace(p, wi, SAMPLER_DISTANCE)
@@ -279,6 +456,26 @@ class AreaLightsImportanceSampler(Sampler):
     def get_name(self):
         return f"LightsImportance({len(self.area_lights)} lights)"
     
+class GGXSampler(Sampler):
+    def __init__(self):
+        super().__init__()
+
+    def samples(self, p, n, wo, num):
+        S = []
+        k_d, k_s, k_r, k_e, k_es = self.param_mat
+        for _ in range(num):
+            wi, pdf, cos_theta = ggx_sample_vndf(wo, n, k_r)
+            S.append ((wi, pdf, 1.0, cos_theta))
+        return S
+    
+    def pdf(self, p, n, wo, wi):
+        if not self.param_mat: return 0.0
+        k_d, k_s, k_r, k_e, k_es = self.param_mat
+        return ggx_pdf_vndf(wi, wo, n, k_r)
+    
+    def get_name(self):
+        return "GGX"
+    
 class MISSampler(Sampler):
     s1 : Sampler = None
     s2 : Sampler = None
@@ -286,22 +483,25 @@ class MISSampler(Sampler):
 
     def __init__(self, s1, s2, ratio):
         super().__init__()
-        self.s1 = s1
-        self.s2 = s2
+        self.samplers = [s1, s2]
         self.ratio = ratio
 
-    def samples(self, p, n, num):
-        num1 = int(num * self.ratio)
+    def samples(self, p, n, wo, num):
+        r = num * self.ratio
+        num1 = int(r)
+        if random.random() < (r - num1): num1 += 1
         num2 = num - num1
-        S1 = self.s1.samples(p,n, num1)
-        S2 = self.s2.samples(p,n, num2)
+        s1 = self.samplers[0]
+        s2 = self.samplers[1]
+        S1 = s1.samples(p,n, wo, num1)
+        S2 = s2.samples(p,n, wo, num2)
         S = []
         for s in S1:
             wi1, pdf1, mis_w1, cos_theta1 = s
             if pdf1 == 0: 
                 S.append(s)
                 continue
-            pdf2 = self.s2.pdf(p, n, wi1)
+            pdf2 = s2.pdf(p, n, wo, wi1)
             w = (num1 * pdf1) / (num1 * pdf1 + num2 * pdf2)
             S.append((wi1, pdf1, w, cos_theta1))
         for s in S2:
@@ -309,35 +509,34 @@ class MISSampler(Sampler):
             if pdf2 == 0: 
                 S.append(s)
                 continue
-            pdf1 = self.s1.pdf(p, n, wi2)
+            pdf1 = s1.pdf(p, n, wo, wi2)
             w = (num2 * pdf2) / (num1 * pdf1 + num2 * pdf2)
             S.append((wi2, pdf2, w, cos_theta2))
         return S
     
-    def pdf(self, p, n, wi): # MIS Samples cannot be used in any strategy that requires computing the PDF for a generic wi
+    def pdf(self, p, n, wo, wi): # MIS Samples cannot be used in any strategy that requires computing the PDF for a generic wi
         return None
     
     def get_name(self):
-        return f"MIS {int(self.ratio * 100)}% {self.s1.get_name()} {100 - int(self.ratio * 100)}% {self.s2.get_name()}"
+        s1 = self.samplers[0]
+        s2 = self.samplers[1]
+        return f"MIS {int(self.ratio * 100)}% {s1.get_name()} {100 - int(self.ratio * 100)}% {s2.get_name()}"
     
 class RISSampler(Sampler):
     M : int = None
-    s : Sampler = None
 
     def __init__(self, M : int, s : Sampler):
         super().__init__()
         self.M = M
-        self.s = s
+        self.samplers = [s]
 
-    def samples(self, p, n, num):
-        if self.target_pdf is None:
-            return self.s.samples (p, n, num)
-
+    def samples(self, p, n, wo, num):
         F = []
 
+        s = self.samplers[0]
         for _ in range(num):
-            S = self.s.samples(p, n, self.M)
-            W = [0.0 if pdf == 0.0 or mis_w == 0.0 else self.target_pdf(wi, cos_theta) * mis_w / pdf for wi, pdf, mis_w, cos_theta in S]
+            S = s.samples(p, n, wo, self.M)
+            W = [0.0 if pdf == 0.0 or mis_w == 0.0 else self.param_target_pdf(wi, cos_theta) * mis_w / pdf for wi, pdf, mis_w, cos_theta in S]
             total_weight = sum(W)
 
             champion = get_weighted_random_index(W, total_weight, lambda w: w)
@@ -353,11 +552,12 @@ class RISSampler(Sampler):
 
         return F
     
-    def pdf(self, p, n, wi):  # MIS Samples cannot be used in any strategy that requires computing the PDF for a generic wi
+    def pdf(self, p, n, wo, wi):  # MIS Samples cannot be used in any strategy that requires computing the PDF for a generic wi
         return None
     
     def get_name(self):
-        return f"RIS({self.M} from {self.s.get_name()})"
+        s = self.samplers[0]
+        return f"RIS({self.M} from {s.get_name()})"
 
         
 
@@ -480,10 +680,12 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
 
     area_lights : List[AreaLight] = []
     ggx_mat_cache : GGXMaterialCache = None
-    sampler : Sampler = None
+    direct_sampler : Sampler = None
+    indirect_sampler : Sampler = None
     max_bounce = 1
     russia_roulette_level = 1
     russian_roulette_prob = 0.5
+    debug_points = []
 
     # Init is called whenever a new render engine instance is created. Multiple
     # instances may exist at the same time, for example for a viewport and final
@@ -578,14 +780,15 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
             return lambert_BDRF(k_d) + ggx_BDRF (wi, wo, n, Vector((0.04, 0.04, 0.04)), k_r) * k_s
 
         accumulator = Vector((0, 0, 0))
-        self.sampler.target_pdf = lambda wi, cos_theta: bdrf (wi).length * cos_theta
-        S = self.sampler.samples (p, n, num)
+        sampler = self.direct_sampler if level == 0 else self.indirect_sampler
+        sampler.set_params( lambda wi, cos_theta: bdrf (wi).length * cos_theta, m)
+        S = sampler.samples (p, n, wo, num)
         for s in S:
             wi, pdf, mis_w, cos_theta = s
             if pdf == 0.0: continue
             hit, pos, nor, mat = self.ray_trace(p + n * SAMPLER_BIAS, wi, SAMPLER_DISTANCE)
             if not hit: continue
-            li = self.compute_randiance(pos, nor, mat, wi, num, level + 1)
+            li = self.compute_randiance(pos, nor, mat, -wi, num, level + 1)
             accumulator += bdrf(wi) * li * mis_w * cos_theta / pdf
         accumulator = russian_roulette_scale * accumulator / num
         return accumulator
@@ -620,28 +823,30 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
         htx = hty * ar
 
         self.generate_scene()
-        #self.sampler = RISSampler(32, MISSampler(GenericSampler(cosine_sample, cosine_pdf, "Cosine"), AreaLightsImportanceSampler(self.area_lights), 0.5))
-        #self.sampler = GenericSampler(cosine_sample, cosine_pdf, "Cosine")
-        self.sampler = AreaLightsImportanceSampler(self.area_lights)
-        #self.sampler = RISSampler(2, GenericSampler(cosine_sample, cosine_pdf, "Cosine"))
-        #self.sampler = RISSampler(32, AreaLightsImportanceSampler(self.area_lights))
+        cosine = SimpleSampler(cosine_sample, cosine_pdf, "Cosine")
+        area_lights = AreaLightsImportanceSampler(self.area_lights)
+        ggx = GGXSampler()
+        self.direct_sampler = MISSampler(area_lights, ggx, 0.5)
+        self.indirect_sampler = area_lights
 
         start = perf_counter()
         last_display = start
         self.russia_roulette_level = 1
-        self.russian_roulette_prob = 0.5
+        self.russian_roulette_prob = 1.0
         self.max_bounce = 1
-        num = 10
+        num = 50
         print (f"Rendering (  )...")
         print (f" - samples {num}")
         print (f" - bounces {self.max_bounce}")
         print (f" - bounce russian roulette starting from bounce {self.russia_roulette_level} with probability {self.russian_roulette_prob}")
-        print (f" - using sampler {self.sampler.get_name()}")
+        print (f" - using sampler {self.direct_sampler.get_name()} for direct lighting")
+        print (f" - using sampler {self.indirect_sampler.get_name()} for indirect lighting")
         for y in range(h):
             for x in range (w):
                 px = (2 * (x + 0.5) / w - 1) * htx
                 py = (1 - 2 * (y + 0.5) / h) * hty
                 d = (cam_forward + cam_right * px + cam_up * py).normalized()
+                # if x != 130 or y != h-1-188: continue
                 image[(h-1-y) * w + x] = self.primary(cam_pos, d, num)
 
                 now = perf_counter()
@@ -655,7 +860,7 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
         
         self.area_lights = []
         self.ggx_mat_cache = None
-        
+
         # Here we write the pixel values to the RenderResult
         result = self.begin_result(0, 0, self.size_x, self.size_y)
         layer = result.layers[0].passes["Combined"]
