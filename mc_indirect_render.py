@@ -29,7 +29,7 @@ def get_cosmetic_duration(t):
     h, t = divmod(t, 3600)
     m, s = divmod(t, 60)
 
-    parts = [f"{v}{u}" for v, u in [(d,"d"), (h,"h"), (m,"m"), (s,"s"), (ms,"ms")] if v]
+    parts = [f"{v}{u}" for v, u in [(d,"d"), (h,"h"), (m,"m"), (s,"s")] if v]
     ret = " ".join(parts)
     if len(ret) == 0: return "now"
     return ret
@@ -101,17 +101,17 @@ class AreaLight:
             self.polygons.append((weight, tri_weights))
         self.weight = self.area * k_es
 
-        print (f"Area lignt {self.obj.name}")
-        print (f"\tArea {self.area}")
-        print (f"\tLi {k_es}")
-        print (f"\tWeight {self.weight}")
-        print (f"\tNum polys {len(self.polygons)}")
-        for p in self.polygons:
-            weight, tri_weights = p
-            print (f"\t\tWeight {weight}")
-            print (f"\t\tNum Tris {len(tri_weights)}")
-            for w in tri_weights:
-                print (f"\t\t\ttri weight {w}")
+        # print (f"Area light {self.obj.name}")
+        # print (f"\tArea {self.area}")
+        # print (f"\tLi {k_es}")
+        # print (f"\tWeight {self.weight}")
+        # print (f"\tNum polys {len(self.polygons)}")
+        # for p in self.polygons:
+        #     weight, tri_weights = p
+        #     print (f"\t\tWeight {weight}")
+        #     print (f"\t\tNum Tris {len(tri_weights)}")
+        #     for w in tri_weights:
+        #         print (f"\t\t\ttri weight {w}")
 
     # returns p, n, mat
     def get_weight_random_point(self):
@@ -130,7 +130,7 @@ class AreaLight:
             v = 1.0 - v
         p = interp_barycentric(a, b, c, u, v)
         n = ((b-a).cross(c-a)).normalized()
-        return p, n, self.mat
+        return p, n
     
     # returns pdf, wi
     def pdf(self, p, n, p_light, n_light):
@@ -138,7 +138,7 @@ class AreaLight:
         r = wi.length
         wi /= r
         pdf_area_uniform = 1.0 / self.area
-        cos_theta_light = max(n_light.dot(-wi), 0.0)
+        cos_theta_light = math.fabs(n_light.dot(-wi)) # double sided pdf
         if cos_theta_light < 1e-6:
             return 0, wi
         return pdf_area_uniform * r * r / cos_theta_light, wi
@@ -207,69 +207,65 @@ def cosine_pdf(p, n, wi):
 SAMPLER_DISTANCE = 20.0
 SAMPLER_BIAS = 0.001
 class Sampler(ABC):
-    # return wi, pos, nor, pdf, cos_theta, mat
+    # in case the sampler supports sampling from a unnormalized uniform pdf or target function. RIS supports sampling from target pdf
+    # target_pdf (wi, cos_theta) -> float
+    target_pdf = None
+
+    # return [(wi, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
     @abstractmethod
-    def sample(self, p, n):
+    def samples(self, p, n, num):
         pass
     # return pdf
     @abstractmethod
     def pdf(self, p, n, wi):
         pass
+    @abstractmethod
+    def get_name(self):
+        pass
 
-class GenericightSampler(Sampler):
+class GenericSampler(Sampler):
     sample_l = None
     pdf_l = None
-    ray_trace_l = None
+    name = None
 
-    def __init__(self, sample_l, pdf_l, ray_trace_l):
+    def __init__(self, sample_l, pdf_l, name):
         self.sample_l = sample_l
         self.pdf_l = pdf_l
-        self.ray_trace_l = ray_trace_l
+        self.name = name
 
-    def sample (self, p, n):
-        wi, pdf, cos_theta = self.sample_l(n)
-
-        hit, pos, nor, mat = self.ray_trace_l(p + n * SAMPLER_BIAS, wi, SAMPLER_DISTANCE)
-        if not hit or wi.dot(nor) >= 0.0:
-            return None, None, None, None, None, None
-
-        return wi, pos, nor, pdf, cos_theta, mat
+    def samples (self, p, n, num):
+        S = []
+        for _ in range(num):
+            wi, pdf, cos_theta = self.sample_l(n)
+            S.append((wi, pdf, 1.0, cos_theta))
+        return S
     
     def pdf(self, p, n, wi):
         return self.pdf_l(p, n, wi)
-    
+
+    def get_name(self):
+        return self.name
+
 class AreaLightsImportanceSampler(Sampler):
     area_lights : List[AreaLight] = []
-    ray_trace_l = None
     weight = 0
 
-    def __init__(self, area_lights : List[AreaLight], ray_trace_s):
-        self.ray_trace_l = ray_trace_s
+    def __init__(self, area_lights : List[AreaLight]):
 
         self.area_lights = area_lights
         for l in self.area_lights:
             self.weight += l.weight
 
-    def sample(self, p, n):
-        def is_visible(visibility_pos):
-            s = p + n * SAMPLER_BIAS
-            d = (visibility_pos-p).length
-            wi = (visibility_pos-p) / d
-            hit, pos, nor, mat = self.ray_trace_l(s, wi, d)
-            if not hit: return True
-            return (pos - visibility_pos).length < SAMPLER_BIAS * 3.0
-
-        l = self.area_lights[get_weighted_random_index(self.area_lights, self.weight, lambda l: l.weight)]
-        pos, nor, mat = l.get_weight_random_point()
-        if not is_visible(pos): 
-            return None, None, None, None, None, None
-
-        pdf, wi = l.pdf(p, n, pos, nor)
-
-        pdf *= l.weight / self.weight # adjust pdf based on light selection pdf
-        cos_theta = max(0, wi.dot(n))
-
-        return wi, pos, nor, pdf, cos_theta, mat
+    def samples(self, p, n, num):
+        S = []
+        for _ in range(num):
+            l = self.area_lights[get_weighted_random_index(self.area_lights, self.weight, lambda l: l.weight)]
+            pos, nor = l.get_weight_random_point()
+            pdf, wi = l.pdf(p, n, pos, nor)
+            pdf *= l.weight / self.weight # adjust pdf based on light selection pdf
+            cos_theta = max(0, wi.dot(n))
+            S.append((wi, pdf, 1.0, cos_theta))
+        return S
     
     def pdf(self, p, n, wi):
         pdf = 0.0
@@ -279,6 +275,91 @@ class AreaLightsImportanceSampler(Sampler):
             l_pdf, _ = l.pdf(p, n, pos, nor)
             pdf += l_pdf * l.weight / self.weight
         return pdf
+    
+    def get_name(self):
+        return f"LightsImportance({len(self.area_lights)} lights)"
+    
+class MISSampler(Sampler):
+    s1 : Sampler = None
+    s2 : Sampler = None
+    ratio : float = None
+
+    def __init__(self, s1, s2, ratio):
+        super().__init__()
+        self.s1 = s1
+        self.s2 = s2
+        self.ratio = ratio
+
+    def samples(self, p, n, num):
+        num1 = int(num * self.ratio)
+        num2 = num - num1
+        S1 = self.s1.samples(p,n, num1)
+        S2 = self.s2.samples(p,n, num2)
+        S = []
+        for s in S1:
+            wi1, pdf1, mis_w1, cos_theta1 = s
+            if pdf1 == 0: 
+                S.append(s)
+                continue
+            pdf2 = self.s2.pdf(p, n, wi1)
+            w = (num1 * pdf1) / (num1 * pdf1 + num2 * pdf2)
+            S.append((wi1, pdf1, w, cos_theta1))
+        for s in S2:
+            wi2, pdf2, mis_w2, cos_theta2 = s
+            if pdf2 == 0: 
+                S.append(s)
+                continue
+            pdf1 = self.s1.pdf(p, n, wi2)
+            w = (num2 * pdf2) / (num1 * pdf1 + num2 * pdf2)
+            S.append((wi2, pdf2, w, cos_theta2))
+        return S
+    
+    def pdf(self, p, n, wi): # MIS Samples cannot be used in any strategy that requires computing the PDF for a generic wi
+        return None
+    
+    def get_name(self):
+        return f"MIS {int(self.ratio * 100)}% {self.s1.get_name()} {100 - int(self.ratio * 100)}% {self.s2.get_name()}"
+    
+class RISSampler(Sampler):
+    M : int = None
+    s : Sampler = None
+
+    def __init__(self, M : int, s : Sampler):
+        super().__init__()
+        self.M = M
+        self.s = s
+
+    def samples(self, p, n, num):
+        if self.target_pdf is None:
+            return self.s.samples (p, n, num)
+
+        F = []
+
+        for _ in range(num):
+            S = self.s.samples(p, n, self.M)
+            W = [0.0 if pdf == 0.0 or mis_w == 0.0 else self.target_pdf(wi, cos_theta) * mis_w / pdf for wi, pdf, mis_w, cos_theta in S]
+            total_weight = sum(W)
+
+            champion = get_weighted_random_index(W, total_weight, lambda w: w)
+            wi, pdf, mis_w, cos_theta = S[champion]
+            if W[champion] == 0.0:
+                F.append((wi, 0.0, 0.0, cos_theta))
+            else:
+                f = W[champion] * pdf / mis_w # compute target_pdf from weight instead of calculating it
+                w = (total_weight / self.M) / f
+                # RIS replaces the mis_w as 1 it's already incorporated into w. We can have RIS from MIS
+                # and 1/w can be used as a PDF in the sense that f(x) / pdf = f(x) * w
+                F.append((wi, 1/w, 1.0, cos_theta)) 
+
+        return F
+    
+    def pdf(self, p, n, wi):  # MIS Samples cannot be used in any strategy that requires computing the PDF for a generic wi
+        return None
+    
+    def get_name(self):
+        return f"RIS({self.M} from {self.s.get_name()})"
+
+        
 
 # BDRF =========================
 
@@ -379,12 +460,12 @@ class GGXMaterialCache:
         k_es = bsdf.inputs["Emission Strength"].default_value
         ggx_mat = (k_d, k_s, k_r, k_e, k_es)
         self.mats[name] = ggx_mat
-        print (f"Caching material {name} as:")
-        print (f"\tk_d {k_d}")
-        print (f"\tk_r {k_r}")
-        print (f"\tk_s {k_s}")
-        print (f"\tk_e {k_e}")
-        print (f"\tk_es {k_es}")
+        # print (f"Caching material {name} as:")
+        # print (f"\tk_d {k_d}")
+        # print (f"\tk_r {k_r}")
+        # print (f"\tk_s {k_s}")
+        # print (f"\tk_e {k_e}")
+        # print (f"\tk_es {k_es}")
         return ggx_mat
 
 
@@ -474,11 +555,11 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
     def ray_trace (self, s, wi, d):
         scene = bpy.context.scene
         depsgraph = bpy.context.evaluated_depsgraph_get()
-        result, location, normal, index, object, matrix = scene.ray_cast(depsgraph, s, wi, distance = d)
+        result, pos, nor, index, object, matrix = scene.ray_cast(depsgraph, s, wi, distance = d)
         if result:
             mesh = object.data
-            pay_load = self.ggx_mat_cache.get(object.material_slots[mesh.polygons[index].material_index])
-            return result, location, normal, pay_load
+            mat = self.ggx_mat_cache.get(object.material_slots[mesh.polygons[index].material_index])
+            return result, pos, nor, mat
         return False, None, None, None
     
     def compute_randiance (self, p, n, m, wo, num, level):
@@ -492,17 +573,20 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
             if random.random() > self.russian_roulette_prob: return k_e * k_es
             russian_roulette_scale = 1.0 / self.russian_roulette_prob
 
-        def bdrf(wi, n, wo, m):
+        def bdrf(wi):
             k_d, k_s, k_r, k_e, k_es = m
             return lambert_BDRF(k_d) + ggx_BDRF (wi, wo, n, Vector((0.04, 0.04, 0.04)), k_r) * k_s
 
         accumulator = Vector((0, 0, 0))
-        S = [self.sampler.sample (p, n) for _ in range(num)]
+        self.sampler.target_pdf = lambda wi, cos_theta: bdrf (wi).length * cos_theta
+        S = self.sampler.samples (p, n, num)
         for s in S:
-            wi, pos, nor, pdf, cos_theta, mat = s
-            if wi is None or pdf == 0.0: continue
+            wi, pdf, mis_w, cos_theta = s
+            if pdf == 0.0: continue
+            hit, pos, nor, mat = self.ray_trace(p + n * SAMPLER_BIAS, wi, SAMPLER_DISTANCE)
+            if not hit: continue
             li = self.compute_randiance(pos, nor, mat, wi, num, level + 1)
-            accumulator += bdrf(wi, n, wo, m) * li * cos_theta / pdf
+            accumulator += bdrf(wi) * li * mis_w * cos_theta / pdf
         accumulator = russian_roulette_scale * accumulator / num
         return accumulator
     
@@ -536,16 +620,23 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
         htx = hty * ar
 
         self.generate_scene()
-        #self.sampler = GenericightSampler(cosine_sample, cosine_pdf, lambda p, wi, d: self.ray_trace(p, wi, d))
-        self.sampler = AreaLightsImportanceSampler(self.area_lights, lambda p, wi, d: self.ray_trace(p, wi, d))
+        #self.sampler = RISSampler(32, MISSampler(GenericSampler(cosine_sample, cosine_pdf, "Cosine"), AreaLightsImportanceSampler(self.area_lights), 0.5))
+        #self.sampler = GenericSampler(cosine_sample, cosine_pdf, "Cosine")
+        self.sampler = AreaLightsImportanceSampler(self.area_lights)
+        #self.sampler = RISSampler(2, GenericSampler(cosine_sample, cosine_pdf, "Cosine"))
+        #self.sampler = RISSampler(32, AreaLightsImportanceSampler(self.area_lights))
 
         start = perf_counter()
         last_display = start
         self.russia_roulette_level = 1
-        self.russian_roulette_prob = 1.0
-        self.max_bounce = 0
+        self.russian_roulette_prob = 0.5
+        self.max_bounce = 1
         num = 10
-        print (f"Rendering (samples {num} bounces {self.max_bounce} from {self.russia_roulette_level} prob {self.russian_roulette_prob})...")
+        print (f"Rendering (  )...")
+        print (f" - samples {num}")
+        print (f" - bounces {self.max_bounce}")
+        print (f" - bounce russian roulette starting from bounce {self.russia_roulette_level} with probability {self.russian_roulette_prob}")
+        print (f" - using sampler {self.sampler.get_name()}")
         for y in range(h):
             for x in range (w):
                 px = (2 * (x + 0.5) / w - 1) * htx
@@ -557,10 +648,10 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
                 if now - last_display > 4.0:
                     last_display = now
                     ratio = (y * w + x) / (w*h)
-                    duration = now - start
-                    eta = duration / ratio - duration
-                    print (f"\tRender {int(100*ratio)} % eta {get_cosmetic_duration(eta)}")
-        print (f"Rendering (samples {num} bounces {self.max_bounce}) from {self.russia_roulette_level} prob {self.russian_roulette_prob}) done in {get_cosmetic_duration(perf_counter() - start)}")
+                    elapsed = now-start
+                    total = elapsed / ratio
+                    print (f"\tRender {int(100*ratio)} % Elapsed {get_cosmetic_duration(elapsed)} total {get_cosmetic_duration(total)} ETA {get_cosmetic_duration(total - elapsed)}")
+        print (f"Rendering done in {get_cosmetic_duration(perf_counter() - start)}")
         
         self.area_lights = []
         self.ggx_mat_cache = None
