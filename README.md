@@ -16,9 +16,24 @@ This is a personal study of different methods of handling area lights.
 
 To skip steps (loading scene, creating renderer, etc.) I've hacked a simple custom Blender renderer in Python, which, while slower, allowed me to play around with different methods without the side-hustle of creating the base framework.
 
-A simplified rendering equation for direct lighting with Lambertian BRDF is solved via Monte Carlo. A few methods of sampling have been used.
-
 You can see the full results here: [Download the full report](./Results.pdf)
+
+The goal was to test ReSTIR and here's the result:
+
+<table align="center" width="100%">
+  <tr>
+    <td width="20%"></td>
+    <td align="center" width="60%">
+      <img src="./results/ReSTIR-1ray-5MIS(Area+GGX)-4frames.png" width="100%">
+    </td>
+    <td width="20%"></td>
+  </tr>
+  <tr>
+    <td colspan="4" align="center">
+      <b>ReSTIR DI. Materias Lambert + GGX, 5 new x MIS samples (Area Lights & GGX), spatial re-use of 12 samples, 4 frames temporal accumulation. 0.86 rays per pixel per frame. PDF not recomputed WIP</b>
+    </td>
+  </tr>
+</table>
 
 ## Direct Sampling - Uniform Sampling
 Rays are sent from every pixel following a solid angle uniform sampling, and when they hit an area light, the light contribution is considered.
