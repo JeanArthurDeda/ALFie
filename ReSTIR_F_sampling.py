@@ -1,4 +1,5 @@
 import sys
+from enum import Enum
 import os
 import bpy
 import array
@@ -21,6 +22,9 @@ if blend_dir not in sys.path:
 # Helpers
 # =======
 
+def luminance_rec2020(rgb):
+    return 0.2627 * rgb.x + 0.6780 * rgb.y + 0.0593 * rgb.z
+
 def get_cosmetic_duration(t):
     ms = int(t * 1000) % 1000
     t = int(t)
@@ -31,7 +35,7 @@ def get_cosmetic_duration(t):
 
     parts = [f"{v}{u}" for v, u in [(d,"d"), (h,"h"), (m,"m"), (s,"s")] if v]
     ret = " ".join(parts)
-    if len(ret) == 0: return "now"
+    if len(ret) == 0: return "0s"
     return ret
 
 def get_orthonormal_axis(z_axis):
@@ -58,6 +62,12 @@ def interp_barycentric(p0, p1, p2, u, v):
     w = 1.0 - u - v
     return p0*u + p1*v + p2*w
 
+def sample_disk(x, y, r):
+    radius = r * math.sqrt(random.uniform(0, 1))
+    angle = random.uniform(0, 2*math.pi)
+    dx = int(x + math.cos(angle) * radius)
+    dy = int(y + math.sin(angle) * radius)
+    return dx, dy
 
 # Area light =================
 
@@ -66,22 +76,26 @@ class AreaLight:
     matrix_world = None
     inv_matrix_world = None
     mat = None
+    li = None
     verts = None
     ggx_mat_cache = None
     polygons = []
     area = None
     weight = None
+    name = None
 
     def __init__(self, instance, ggx_mat_cache):
         self.obj = instance.object
         self.ggx_mat_cache = ggx_mat_cache
         obj = instance.object
+        self.name = obj.name
         mesh = obj.data
         self.matrix_world = instance.matrix_world.copy()
         self.inv_matrix_world = instance.matrix_world.inverted().copy()
         self.verts = [instance.matrix_world @ v.co for v in mesh.vertices]
         self.mat = self.ggx_mat_cache.get(obj.material_slots[0].material)
         k_d, k_s, k_r, k_e, k_es = self.mat
+        self.li = luminance_rec2020(k_e * k_es)
 
         self.area = 0.0
         self.polygons = []
@@ -311,7 +325,6 @@ def ggx_sample_vndf(wo: Vector, n: Vector, roughness: float):
 
     return wi, pdf, n_dot_wi
 
-
 def ggx_pdf_vndf(wi: Vector, wo: Vector, n: Vector, roughness: float) -> float:
     """
     PDF for GGX VNDF sampling (Heitz).
@@ -382,16 +395,23 @@ class Sampler(ABC):
 
     samplers = []
 
-    def set_params(self, param_target_pdf, param_mat):
+    def set_params(self, param_target_pdf = None, param_mat = None):
         self.param_target_pdf = param_target_pdf
         self.param_mat = param_mat
         for s in self.samplers:
             s.set_params(param_target_pdf, param_mat)
 
-    # return [(wi, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
+    # return [(wi, l_data | None, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
+    # for area light importance samplers l (pos, nor, li, l) represents the sample pos, nor, li on light l - None otherwise
     @abstractmethod
     def samples(self, p, n, wo, num):
         pass
+    
+    # return (wi, l_data | None, pdf, mis_w(1.0 - if not MIS), cos_theta)
+    # for area light importance samplers l (pos, nor, li, l) represents the sample pos, nor, li on light l - None otherwise
+    def sample (self, p, n, wo):
+        return self.samples(p, n, wo, 1)[0]
+        
     # return pdf
     @abstractmethod
     def pdf(self, p, n, wo, wi):
@@ -399,6 +419,28 @@ class Sampler(ABC):
     @abstractmethod
     def get_name(self):
         pass
+    # checks sample for l_data
+    def check_l_data(s, context_name):
+        wi, l_data, pdf, mis_w, cos_theta = s
+        if not l_data:
+            print (f"{context_name} : Light data missing from sample {Sampler.debug(s)}")
+            return False
+        return True
+    def get_pdf_rays(self):
+        num = 0
+        for s in self.samplers:
+            num += s.get_pdf_rays ()
+        return num
+    # returns a dictionary with the content of the sample
+    def debug(s):
+        if s is None: return {}
+        wi, l_data, pdf, mis_w, cos_theta = s
+        l_data_dict = {}
+        if l_data is not None:
+            pos, nor, li, l = l_data
+            l_data_dict = {"pos" : pos, "nor" : nor, "li": li, "l" : l.name if l is not None else "unknown"}
+        return {"wi" : wi, "l_data" : l_data_dict, "pdf" : pdf, "mis_w" : mis_w, "cos_theta" : cos_theta }
+
 
 class SimpleSampler(Sampler):
     sample_l = None
@@ -410,11 +452,13 @@ class SimpleSampler(Sampler):
         self.pdf_l = pdf_l
         self.name = name
 
+    # return [(wi, l_data | None, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
+    # for area light importance samplers l (pos, nor, li, l) represents the sample pos, nor, li on light l - None otherwise
     def samples (self, p, n, wo, num):
         S = []
         for _ in range(num):
             wi, pdf, cos_theta = self.sample_l(n)
-            S.append((wi, pdf, 1.0, cos_theta))
+            S.append((wi, None, pdf, 1.0, cos_theta))
         return S
     
     def pdf(self, p, n, wo, wi):
@@ -427,12 +471,16 @@ class AreaLightsImportanceSampler(Sampler):
     area_lights : List[AreaLight] = []
     weight = 0
 
+    pdf_rays = 0
+
     def __init__(self, area_lights : List[AreaLight]):
 
         self.area_lights = area_lights
         for l in self.area_lights:
             self.weight += l.weight
 
+    # return [(wi, l_data | None, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
+    # for area light importance samplers l (pos, nor, li, l) represents the sample pos, nor, li on light l - None otherwise
     def samples(self, p, n, wo, num):
         S = []
         for _ in range(num):
@@ -441,10 +489,11 @@ class AreaLightsImportanceSampler(Sampler):
             pdf, wi = l.pdf(p, n, pos, nor)
             pdf *= l.weight / self.weight # adjust pdf based on light selection pdf
             cos_theta = max(0, wi.dot(n))
-            S.append((wi, pdf, 1.0, cos_theta))
+            S.append((wi, (pos, nor, l.li, l), pdf, 1.0, cos_theta))
         return S
     
     def pdf(self, p, n, wo, wi):
+        self.pdf_rays += 1
         pdf = 0.0
         for l in self.area_lights:
             hit, pos, nor = l.ray_trace(p, wi, SAMPLER_DISTANCE)
@@ -453,6 +502,13 @@ class AreaLightsImportanceSampler(Sampler):
             pdf += l_pdf * l.weight / self.weight
         return pdf
     
+    def get_pdf_rays(self):
+        num = self.pdf_rays
+        for s in self.samplers:
+            num += s.get_pdf_rays ()
+        return num
+
+    
     def get_name(self):
         return f"LightsImportance({len(self.area_lights)} lights)"
     
@@ -460,12 +516,14 @@ class GGXSampler(Sampler):
     def __init__(self):
         super().__init__()
 
+    # return [(wi, l_data | None, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
+    # for area light importance samplers l (pos, nor, li, l) represents the sample pos, nor, li on light l - None otherwise
     def samples(self, p, n, wo, num):
         S = []
         k_d, k_s, k_r, k_e, k_es = self.param_mat
         for _ in range(num):
             wi, pdf, cos_theta = ggx_sample_vndf(wo, n, k_r)
-            S.append ((wi, pdf, 1.0, cos_theta))
+            S.append ((wi, None, pdf, 1.0, cos_theta))
         return S
     
     def pdf(self, p, n, wo, wi):
@@ -486,6 +544,8 @@ class MISSampler(Sampler):
         self.samplers = [s1, s2]
         self.ratio = ratio
 
+    # return [(wi, l_data | None, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
+    # for area light importance samplers l (pos, nor, li, l) represents the sample pos, nor, li on light l - None otherwise
     def samples(self, p, n, wo, num):
         r = num * self.ratio
         num1 = int(r)
@@ -497,21 +557,15 @@ class MISSampler(Sampler):
         S2 = s2.samples(p,n, wo, num2)
         S = []
         for s in S1:
-            wi1, pdf1, mis_w1, cos_theta1 = s
-            if pdf1 == 0: 
-                S.append(s)
-                continue
+            wi1, l_data1, pdf1, mis_w1, cos_theta1 = s
             pdf2 = s2.pdf(p, n, wo, wi1)
-            w = (num1 * pdf1) / (num1 * pdf1 + num2 * pdf2)
-            S.append((wi1, pdf1, w, cos_theta1))
+            w = 0 if pdf1 == 0.0 else (num1 * pdf1) / (num1 * pdf1 + num2 * pdf2)
+            S.append((wi1, l_data1, pdf1, w, cos_theta1))
         for s in S2:
-            wi2, pdf2, mis_w2, cos_theta2 = s
-            if pdf2 == 0: 
-                S.append(s)
-                continue
+            wi2, l_data2, pdf2, mis_w2, cos_theta2 = s
             pdf1 = s1.pdf(p, n, wo, wi2)
-            w = (num2 * pdf2) / (num1 * pdf1 + num2 * pdf2)
-            S.append((wi2, pdf2, w, cos_theta2))
+            w = 0 if pdf2 == 0.0 else (num2 * pdf2) / (num1 * pdf1 + num2 * pdf2)
+            S.append((wi2, l_data2, pdf2, w, cos_theta2))
         return S
     
     def pdf(self, p, n, wo, wi): # MIS Samples cannot be used in any strategy that requires computing the PDF for a generic wi
@@ -530,25 +584,27 @@ class RISSampler(Sampler):
         self.M = M
         self.samplers = [s]
 
+    # return [(wi, l_data | None, pdf, mis_w(1.0 - if not MIS), cos_theta), ... ]
+    # for area light importance samplers l (pos, nor, li, l) represents the sample pos, nor, li on light l - None otherwise
     def samples(self, p, n, wo, num):
         F = []
 
         s = self.samplers[0]
         for _ in range(num):
             S = s.samples(p, n, wo, self.M)
-            W = [0.0 if pdf == 0.0 or mis_w == 0.0 else self.param_target_pdf(wi, cos_theta) * mis_w / pdf for wi, pdf, mis_w, cos_theta in S]
+            W = [0.0 if pdf == 0.0 or mis_w == 0.0 else self.param_target_pdf(wi, cos_theta) * mis_w / pdf for wi, l_data, pdf, mis_w, cos_theta in S]
             total_weight = sum(W)
 
             champion = get_weighted_random_index(W, total_weight, lambda w: w)
-            wi, pdf, mis_w, cos_theta = S[champion]
+            wi, l_data, pdf, mis_w, cos_theta = S[champion]
             if W[champion] == 0.0:
-                F.append((wi, 0.0, 0.0, cos_theta))
+                F.append((wi, l_data, 0.0, 0.0, cos_theta))
             else:
                 f = W[champion] * pdf / mis_w # compute target_pdf from weight instead of calculating it
                 w = (total_weight / self.M) / f
                 # RIS replaces the mis_w as 1 it's already incorporated into w. We can have RIS from MIS
                 # and 1/w can be used as a PDF in the sense that f(x) / pdf = f(x) * w
-                F.append((wi, 1/w, 1.0, cos_theta)) 
+                F.append((wi, l_data, 1/w, 1.0, cos_theta)) 
 
         return F
     
@@ -606,7 +662,7 @@ def ggx_BDRF(wi: Vector, wo: Vector, N: Vector, F0: Vector, roughness: float) ->
     
     # If light or view is below surface, BRDF is 0
     if NdotWi <= 0.0 or NdotWo <= 0.0:
-        return 0.0
+        return Vector((0, 0, 0))
     
     # GGX distribution term D
     alpha = roughness * roughness  # Roughness squared
@@ -643,6 +699,10 @@ def ggx_BDRF(wi: Vector, wo: Vector, N: Vector, F0: Vector, roughness: float) ->
     # Or return RGB vector
     return brdf_rgb
 
+def bdrf(wi, wo, n, m):
+    k_d, k_s, k_r, k_e, k_es = m
+    return lambert_BDRF(k_d) + ggx_BDRF (wi, wo, n, Vector((0.04, 0.04, 0.04)), k_r) * k_s
+
 class GGXMaterialCache:
     mats = None
 
@@ -668,24 +728,101 @@ class GGXMaterialCache:
         # print (f"\tk_es {k_es}")
         return ggx_mat
 
+class Reservoir:
+    s = None # (wi, li, pos, cos_theta)
+    w_sum = 0
+    m = 0
 
-class MonterCarloIndirectEngine(bpy.types.RenderEngine):
+    def read(self, t):
+        self.s, self.w_sum, self.m = t
+        return self
+    
+    def write (self):
+        return (self.s, self.w_sum, self.m)
+    
+    # s = sampler sample (wi, l_data, pdf, mis_w(1.0 - if not MIS), cos_theta)
+    def add_sample(self, s, t_f_value):
+        if not Sampler.check_l_data(s, "Reservoir.add_sample"): return
+
+        wi, l_data, pdf, mis_w, cos_theta = s
+        if pdf == 0.0 or mis_w == 0.0: return self
+
+        w = (t_f_value * mis_w) / pdf
+        
+        self.w_sum += w
+        self.m += 1
+
+        if random.random() * self.w_sum < w:
+            pos, nor, li, l = l_data
+            self.s = (wi, li, pos, cos_theta)
+        return self
+
+    def add_reseroir(self, r):
+        self.w_sum += r.w_sum
+        self.m += r.m
+        if random.random() * self.w_sum <= r.w_sum:
+            self.s = r.s
+        return self
+
+    def decay(self, alpha = 0.8):
+        if self.m == 0: return self
+        self.w_sum *= alpha
+        self.m = max(1, int(self.m * alpha))
+        return self
+
+    def adjust_geometry(self, p, n):
+        if self.s is None: return self
+        (wi, li, pos, cos_theta) = self.s
+        
+        wi = (pos-p).normalized()
+        cos_theta = max(0, n.dot(wi))
+        self.s = (wi, li, pos, cos_theta)
+        
+        return self
+    
+    def debug(t):
+        if t is None: return {}
+        s, w_sum, m = t
+        s_dict = {}
+        if s is not None:
+            wi, li, pos, cos_theta = s
+            s_dict = {"wi" : wi, "li" : li, "pos" : pos, "cos_theta" : cos_theta}
+        return {"s" : s_dict,
+                "w_sum" : w_sum,
+                "m" : m}
+
+class ESpatialType(Enum):
+    KERNEL = 0
+    DISK = 1
+
+class ReSTIRFSamplingEngine(bpy.types.RenderEngine):
     # These three members are used by Blender to set up the
     # RenderEngine; define its internal name, visible name and capabilities.
-    bl_idname = "MonteCarloGI"
-    bl_label = "MonteCarloGI"
+    bl_idname = "ReSTIR_F_Sampling"
+    bl_label = "ReSTIR_F_Sampling"
     bl_use_preview = False
     bl_use_shading_nodes = True
     bl_use_world_space_shading = True
 
     area_lights : List[AreaLight] = []
     ggx_mat_cache : GGXMaterialCache = None
-    direct_sampler : Sampler = None
-    indirect_sampler : Sampler = None
-    max_bounce = 1
-    russia_roulette_level = 1
-    russian_roulette_prob = 0.5
-    debug_points = []
+    sampler : Sampler = None
+    gbuffer = []
+    reservoirs = []
+
+    # configs
+    M = 10 # numbers of samples to be merged in reservoir initialization
+    missing_reservoir_color = [1, 0, 0, 1]
+    spatial_type : ESpatialType = ESpatialType.DISK
+    spatial_specular_rejection = True
+    spatial_disk_radius = 5
+    spatial_disk_num = 5
+    spatial_kernel_radius = 5
+    spatial_kernel_keep_ratio = 0.0
+
+    # stats
+    rays = 0
+    light_rays = 0
 
     # Init is called whenever a new render engine instance is created. Multiple
     # instances may exist at the same time, for example for a viewport and final
@@ -755,6 +892,7 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
                 self.area_lights.append(AreaLight(instance, self.ggx_mat_cache))
 
     def ray_trace (self, s, wi, d):
+        self.rays += 1
         scene = bpy.context.scene
         depsgraph = bpy.context.evaluated_depsgraph_get()
         result, pos, nor, index, object, matrix = scene.ray_cast(depsgraph, s, wi, distance = d)
@@ -764,41 +902,260 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
             return result, pos, nor, mat
         return False, None, None, None
     
-    def compute_randiance (self, p, n, m, wo, num, level):
-        k_d, k_s, k_r, k_e, k_es = m
-        if k_es != 0.0 or level > self.max_bounce:
-            return k_e * k_es
-        
-        # russian roulette
-        russian_roulette_scale = 1.0
-        if level >= self.russia_roulette_level:
-            if random.random() > self.russian_roulette_prob: return k_e * k_es
-            russian_roulette_scale = 1.0 / self.russian_roulette_prob
-
-        def bdrf(wi):
-            k_d, k_s, k_r, k_e, k_es = m
-            return lambert_BDRF(k_d) + ggx_BDRF (wi, wo, n, Vector((0.04, 0.04, 0.04)), k_r) * k_s
-
-        accumulator = Vector((0, 0, 0))
-        sampler = self.direct_sampler if level == 0 else self.indirect_sampler
-        sampler.set_params( lambda wi, cos_theta: bdrf (wi).length * cos_theta, m)
-        S = sampler.samples (p, n, wo, num)
-        for s in S:
-            wi, pdf, mis_w, cos_theta = s
-            if pdf == 0.0: continue
-            hit, pos, nor, mat = self.ray_trace(p + n * SAMPLER_BIAS, wi, SAMPLER_DISTANCE)
-            if not hit: continue
-            li = self.compute_randiance(pos, nor, mat, -wi, num, level + 1)
-            accumulator += bdrf(wi) * li * mis_w * cos_theta / pdf
-        accumulator = russian_roulette_scale * accumulator / num
-        return accumulator
+    def visibility(self, s, e) -> float:
+        wi = e-s
+        d = wi.length
+        wi /= d
+        hit, pos, nor, mat = self.ray_trace(s + wi * SAMPLER_BIAS, wi, d)
+        if not hit: return 1.0
+        return 1.0 if (pos - e).length < 3.0 * SAMPLER_BIAS else 0.0
     
-    def primary (self, p, wi, num):
-        hit, pos, nor, mat = self.ray_trace(p, wi, SAMPLER_DISTANCE)
-        if hit:
-            l = self.compute_randiance(pos, nor, mat, -wi, num, 0)
-            return [l.x, l.y, l.z, 1]
-        return [0, 0, 0, 0]
+    def ray_trace_lights(self, p, wi, d):
+        self.light_rays += 1
+        ret_l = None
+        ret_d = d
+        ret_pos = None
+        ret_nor = None
+        for l in self.area_lights:
+            hit, pos, nor = l.ray_trace(p, wi, ret_d)
+            if not hit: continue
+            ret_d = (pos-p).length
+            ret_pos = pos
+            ret_nor = nor
+            ret_l = l
+        return (True, (ret_pos, ret_nor, ret_l.li, ret_l)) if ret_l is not None else (False, None)
+    
+    def fill_samples_light_data (self, S, p, n):
+        for i, s in enumerate(S):
+            wi, l_data, pdf, mis_w, cos_theta = s
+            if l_data is not None: continue
+            hit, l_data = self.ray_trace_lights(p + n * SAMPLER_BIAS, wi, SAMPLER_DISTANCE)
+            l_data = l_data if l_data is not None else (wi, Vector((0, 0, 0)), Vector ((0, 0, 0)), None)
+            S[i] = (wi, l_data, pdf, mis_w, cos_theta)
+   
+    # Passes
+
+    # params = cam_pos
+    def generate_gbuffer(self, x, y, wo, params):
+        cam_pos = params
+        hit, pos, nor, mat = self.ray_trace(cam_pos, -wo, SAMPLER_DISTANCE)
+        self.gbuffer[y*self.size_x+x] = (pos, nor, mat) if hit else None
+
+    # params = destination reservoir
+    def init_reservoir (self, x, y, wo, params):
+        dst = params
+        ofs = y*self.size_x+x
+
+        # read gbuffer
+        gbuffer = self.gbuffer[ofs]
+        if not gbuffer: dst[ofs] = None; return
+        p, n, m = gbuffer
+
+        # skip emissive materials (area lights)
+        k_d, k_s, k_r, k_e, k_es = m
+        if k_es != 0.0: return
+
+        # this the target function (a.k.a the unormalzed pdf) used to generate sample for sampling f
+        # supp(f) ⊆ supp (target) meaning the target(x) != 0 for all the x where f(x) != 0
+        # usually this the rendering equation without the visibity term (as it is eXpensvi)
+        # v = wi, li, mis_w, cos_theta
+        def f_t(v)->Vector:
+            wi, mis_w, li, cos_theta = v
+            return bdrf(wi, wo, n, m) * li * cos_theta * mis_w
+      
+        # v from sample which will evaluuate f_t(v)
+        def v_from_sample (s):
+            wi, l_data, pdf, mis_w, cos_theta = s
+            pos, nor, li, l = l_data
+            return (wi, mis_w, li, cos_theta)
+        
+        # v from reservoir which will evaluuate f_t(v)
+        def v_from_reservoir (r):
+            wi, li, pos, cos_theta = r.s
+            return (wi, 1.0, li, cos_theta)
+
+        r = Reservoir()
+        self.sampler.set_params(param_mat=m)
+        S = self.sampler.samples(p, n, wo, self.M)
+        self.fill_samples_light_data (S, p, n)
+        for s in S:
+            r.add_sample(s, luminance_rec2020(f_t(v_from_sample(s))))
+        if r.s is None:dst[ofs] = None; return
+        r.w_sum /= luminance_rec2020(f_t(v_from_reservoir(r))) # remove the champion weight
+
+        dst[ofs] = r.write()
+
+    # params = reservoir to shadow
+    def shadow(self, x, y, wo, params):
+        dst = params
+        ofs = y*self.size_x+x
+
+        # read gbuffer
+        gbuffer = self.gbuffer[ofs]
+        if not gbuffer: dst[ofs] = None; return
+        p, n, m = gbuffer
+
+        # skip emissive materials (area lights)
+        k_d, k_s, k_r, k_e, k_es = m
+        if k_es != 0.0: return
+
+        r_data = dst[ofs]
+        if r_data is None: return
+        r = Reservoir().read(r_data)
+        wi, li, pos, cos_theta = r.s
+        r.w_sum *= self.visibility(p, pos)
+        dst[ofs] = r.write()
+
+    def get_spatial_matching_reservoir(self, wo, p, n, h, m, dx, dy, src):
+        if dx < 0 or dx >= self.size_x or dy < 0 or dy >= self.size_y: return None
+        ofs = dy * self.size_x + dx
+
+        # sample gbuffer
+        gbuffer = self.gbuffer[ofs]
+        if gbuffer is None: return None
+        pos, nor, mat = gbuffer
+
+        # avoid emissive (area lights)
+        k_d, k_s, k_r, k_e, k_es = mat
+        if k_es > 0: return None
+
+        # sample reseroir
+        r_data = src[ofs]
+        if r_data is None: return None
+        r = Reservoir().read(r_data)
+
+        # Roughness similarity weight
+        if self.spatial_specular_rejection:
+            curr_k_d, curr_k_s, curr_k_r, curr_k_e, curr_k_es = m
+            if max(0, 1.0 - abs(curr_k_r - k_r) * 2.0) < 0.2:
+                return None
+            # half vector
+            r_wi, _, _, _ = r.s
+            if h is not None and h.dot((r_wi+wo).normalized()) < 0.9: return None
+
+        # normal
+        if n.dot(nor) < 0.9: return None
+
+        # position
+        if (p-pos).length_squared > 0.5: return None
+
+        return r
+
+    # params = (src, dst)
+    def spatial_disk_reuse(self, x, y, wo, params):
+        src, dst = params
+        ofs = y*self.size_x+x
+
+        # read gbuffer
+        gbuffer = self.gbuffer[ofs]
+        if not gbuffer: dst[ofs] = None; return
+        p, n, m = gbuffer
+
+        # skip emissive materials (area lights)
+        k_d, k_s, k_r, k_e, k_es = m
+        if k_es != 0.0: dst[ofs] = None; return
+
+        r = Reservoir()
+        r_data = src[ofs]
+        h = None
+        if r_data is not None:
+            r.read(r_data)
+            # half vector
+            wi, _, _, _ = r.s
+            h = (wi + wo).normalized()
+
+        for i in range (self.spatial_disk_num):
+            dx, dy = sample_disk(x, y, self.spatial_disk_radius)
+            dr = self.get_spatial_matching_reservoir(wo, p, n, h, m, dx, dy, src)
+            if dr is None: continue
+            if random.random() < self.spatial_shadowing_ratio:
+                d_wi, d_li, d_pos, d_cos_theta = dr.s
+                dr.w_sum *= self.visibility(p, d_pos)
+            r.add_reseroir(dr)
+
+        dst[ofs] = None if r.s is None else r.write()
+
+    # params = (src, dst)
+    def spatial_kernel_reuse(self, x, y, wo, params):
+        src, dst = params
+        ofs = y*self.size_x+x
+
+        # read gbuffer
+        gbuffer = self.gbuffer[ofs]
+        if not gbuffer: dst[ofs] = None; return
+        p, n, m = gbuffer
+
+        # skip emissive materials (area lights)
+        k_d, k_s, k_r, k_e, k_es = m
+        if k_es != 0.0: dst[ofs] = None; return
+
+
+        r = Reservoir()
+        r_data = src[ofs]
+        h = None
+        if r_data is not None:
+            r.read(r_data)
+            # half vector
+            wi, _, _, _ = r.s
+            h = (wi + wo).normalized()
+        
+        for dy in range(y - self.spatial_kernel_radius, y + self.spatial_kernel_radius + 1):
+            for dx in range(x - self.spatial_kernel_radius, x + self.spatial_kernel_radius + 1):
+                if dx == x and dy == y: continue
+                if self.spatial_kernel_keep_ratio != 1.0 and random.random() > self.spatial_kernel_keep_ratio: continue
+                dr = self.get_spatial_matching_reservoir(wo, p, n, h, m, dx, dy, src)
+                if dr is None: continue
+                if random.random() < self.spatial_shadowing_ratio:
+                    d_wi, d_li, d_pos, d_cos_theta = dr.s
+                    dr.w_sum *= self.visibility(p, d_pos)
+                r.add_reseroir(dr)
+
+        dst[ofs] = None if r.s is None else r.write()
+
+    # params (prev, dst)
+    def temporal_reuse(self, x, y, wo, params):
+        prev, dst = params
+        ofs = y*self.size_x+x
+
+        r_data = dst[ofs]
+        if r_data is None: return
+
+        prev_r_data = prev[ofs]
+        if prev_r_data is None: return
+
+        p_r = Reservoir().read(prev_r_data)
+        r = Reservoir().read(r_data).add_reseroir(p_r.decay())
+
+        dst[ofs] = r.write()
+
+    # params = (source reservoir, destination image)
+    def shade(self, x, y, wo, params):
+        src, dst = params
+
+        src_ofs = y*self.size_x+x
+        dst_ofst = (self.size_y - 1 - y) * self.size_x + x
+
+        # read gbuffer
+        gbuffer = self.gbuffer[src_ofs]
+        if not gbuffer: dst[dst_ofst] = [0, 0, 0, 1]; return
+        p, n, m = gbuffer
+
+        # emissive materials (area lights)
+        k_d, k_s, k_r, k_e, k_es = m
+        if k_es != 0.0: 
+            li = k_e * k_es
+            dst[dst_ofst] = [li.x, li.y, li.z, 1];
+            return
+        
+        r_data = src[src_ofs]
+        if r_data is None: dst[dst_ofst] = self.missing_reservoir_color; return
+        r = Reservoir().read(r_data)
+        
+        def f(r:Reservoir) -> Vector:
+            wi, li, pos, cos_theta = r.s
+            return bdrf(wi, wo, n, m) * li * cos_theta * r.w_sum / r.m
+        f = f(r.adjust_geometry(p, n))        
+        dst[dst_ofst] = [f.x, f.y, f.z, 1]
 
     # This is the method called by Blender for both final renders (F12) and
     # small preview for materials, world and lights.
@@ -823,39 +1180,102 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
         htx = hty * ar
 
         self.generate_scene()
-        cosine = SimpleSampler(cosine_sample, cosine_pdf, "Cosine")
-        area_lights = AreaLightsImportanceSampler(self.area_lights)
-        ggx = GGXSampler()
-        self.direct_sampler = MISSampler(area_lights, ggx, 0.5)
-        self.indirect_sampler = area_lights
+        self.gbuffer = [None] * w * h
+        self.reservoirs = [[None] * w * h for _ in range(3)] 
+        random.seed(42)
 
-        start = perf_counter()
-        last_display = start
-        self.russia_roulette_level = 1
-        self.russian_roulette_prob = 1.0
-        self.max_bounce = 1
-        num = 10
+        src = self.reservoirs[0]
+        dst = self.reservoirs[1]
+        prev = self.reservoirs[2]
+
+        def do_pass (pass_function, params):
+            start = perf_counter()
+            last_display = start
+            display = False
+            check_count = 0
+            for y in range(h):
+                for x in range (w):
+                    px = (2 * (x + 0.5) / w - 1) * htx
+                    py = (1 - 2 * (y + 0.5) / h) * hty
+                    wo = -(cam_forward + cam_right * px + cam_up * py).normalized()
+                    pass_function(x, y, wo, params)
+
+                    check_count += 1
+                    if check_count > 40:
+                        check_count = 0
+                        now = perf_counter()
+                        if display:
+                            if now - last_display > 4.0:
+                                last_display = now
+                                r = (y*w+x) / (w*h)
+                                print (f"\t\t{int(r * 100.0)}% in {get_cosmetic_duration(now - start)}")
+                        else:
+                            if now - start > 4.0:
+                                display = True
+                                print (f"")
+
+            return perf_counter() - start
+
+        self.sampler = AreaLightsImportanceSampler(self.area_lights)#MISSampler(AreaLightsImportanceSampler(self.area_lights), GGXSampler(), 0.75)
+        T = 4
+        self.M = 8
+        self.missing_reservoir_color = [0, 0, 0, 1.0]
+        self.spatial_type = ESpatialType.KERNEL
+        self.spatial_disk_radius = 5
+        self.spatial_disk_num = 12
+        self.spatial_kernel_radius = 5
+        self.spatial_kernel_keep_ratio = 0.16
+        self.spatial_specular_rejection = True
+        self.spatial_shadowing_ratio = 0.01
+
         print (f"Rendering (  )...")
-        print (f" - samples {num}")
-        print (f" - bounces {self.max_bounce}")
-        print (f" - bounce russian roulette starting from bounce {self.russia_roulette_level} with probability {self.russian_roulette_prob}")
-        print (f" - using sampler {self.direct_sampler.get_name()} for direct lighting")
-        print (f" - using sampler {self.indirect_sampler.get_name()} for indirect lighting")
-        for y in range(h):
-            for x in range (w):
-                px = (2 * (x + 0.5) / w - 1) * htx
-                py = (1 - 2 * (y + 0.5) / h) * hty
-                d = (cam_forward + cam_right * px + cam_up * py).normalized()
-                # if x != 130 or y != h-1-188: continue
-                image[(h-1-y) * w + x] = self.primary(cam_pos, d, num)
+        start = perf_counter()
 
-                now = perf_counter()
-                if now - last_display > 4.0:
-                    last_display = now
-                    ratio = (y * w + x) / (w*h)
-                    elapsed = now-start
-                    total = elapsed / ratio
-                    print (f"\tRender {int(100*ratio)} % Elapsed {get_cosmetic_duration(elapsed)} total {get_cosmetic_duration(total)} ETA {get_cosmetic_duration(total - elapsed)}")
+        print (" - Generate GBuffer ...", end="", flush=True)
+        duration = do_pass(self.generate_gbuffer, cam_pos)
+        print (f"\t done in {get_cosmetic_duration(duration)}")
+        self.rays = 0
+        self.light_rays = 0
+
+        for i in range(T):
+            print (f" - {i+1}/{T} init {self.M} {self.sampler.get_name()} ...", end="", flush=True)
+            duration = do_pass(self.init_reservoir, dst)
+            print (f"\t done in {get_cosmetic_duration(duration)}")
+            t = dst; dst = src; src = t;
+
+            print (f"\t- shadow ...", end="", flush=True)
+            duration = do_pass(self.shadow, src)
+            print (f"\t done in {get_cosmetic_duration(duration)}")
+
+            print (f"\t- temporal ...", end="", flush=True)
+            duration = do_pass(self.temporal_reuse, (prev, src))
+            print (f"\t done in {get_cosmetic_duration(duration)}")
+
+            match self.spatial_type:
+                case ESpatialType.DISK:
+                    print (f"\t- spatial radius {self.spatial_disk_radius} samples {self.spatial_disk_num} join specular {self.spatial_specular_rejection} shadow ratio {self.spatial_shadowing_ratio} ...", end="", flush=True)
+                    duration = do_pass(self.spatial_disk_reuse, (src, dst))
+                    print (f"\t done in {get_cosmetic_duration(duration)}")
+                case ESpatialType.KERNEL:
+                    k = self.spatial_kernel_radius * 2 + 1
+                    print (f"\t- spatial {k} x {k} ratio {self.spatial_kernel_keep_ratio} ~ {int(k * k * self.spatial_kernel_keep_ratio)} join specular {self.spatial_specular_rejection} shadow ratio {self.spatial_shadowing_ratio} ...", end="", flush=True)
+                    duration = do_pass(self.spatial_kernel_reuse, (src, dst))
+                    print (f"\t done in {get_cosmetic_duration(duration)}")
+            t = dst; dst = src; src = t;
+
+            t = prev; prev = src; src = t;
+
+        print (" - shade ...", end="", flush=True)
+        duration = do_pass(self.shade, (prev, image))
+        print (f"\t done in {get_cosmetic_duration(duration)}")
+
+        # stats
+        print (f"- rays {int(self.rays / T)} SPP {self.rays / (T*w*h) : .2f}")
+        print (f"- light rays {int(self.light_rays / T)} SPP {self.light_rays / (T*w*h) : .2f}")
+        pdf_rays = self.sampler.get_pdf_rays()
+        print (f"- light rays {int(pdf_rays / T)} SPP {pdf_rays / (T*w*h) : .2f}")
+
+
         print (f"Rendering done in {get_cosmetic_duration(perf_counter() - start)}")
         
         self.area_lights = []
@@ -924,7 +1344,7 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
         self.bind_display_space_shader(scene)
 
         if not self.draw_data or self.draw_data.dimensions != dimensions:
-            self.draw_data = MonteCarloIndirectDrawData(dimensions)
+            self.draw_data = ReSTIRFSamplingDrawData(dimensions)
 
         self.draw_data.draw()
 
@@ -932,7 +1352,7 @@ class MonterCarloIndirectEngine(bpy.types.RenderEngine):
         gpu.state.blend_set('NONE')
 
 
-class MonteCarloIndirectDrawData:
+class ReSTIRFSamplingDrawData:
     def __init__(self, dimensions):
         import gpu
 
@@ -979,14 +1399,14 @@ def get_panels():
 
 def register():
     # Register the RenderEngine.
-    bpy.utils.register_class(MonterCarloIndirectEngine)
+    bpy.utils.register_class(ReSTIRFSamplingEngine)
 
     for panel in get_panels():
         panel.COMPAT_ENGINES.add('MonteCarlo')
 
 
 def unregister():
-    bpy.utils.unregister_class(MonterCarloIndirectEngine)
+    bpy.utils.unregister_class(ReSTIRFSamplingEngine)
 
     for panel in get_panels():
         if 'MonteCarlo' in panel.COMPAT_ENGINES:
