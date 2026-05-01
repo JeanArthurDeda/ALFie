@@ -30,7 +30,7 @@ The goal was to test ReSTIR and here's the result:
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>ReSTIR DI. Materias Lambert + GGX, 5 MIS samples (Area Lights & GGX), spatial re-use of 12 samples, 4 frames temporal accumulation. 0.86 rays per pixel (average). Denoise is missing & PDF is not recomputed - WIP</b>
+      <b>ReSTIR DI. BDRF Lambert + GGX, 5 MIS samples (Area Lights & GGX), spatial re-use of 12 samples, 4 frames temporal accumulation. 0.86 rays per pixel (average). Denoise is missing & PDF is not recomputed - WIP</b>
     </td>
   </tr>
 </table>
