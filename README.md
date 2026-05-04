@@ -18,6 +18,8 @@ To skip steps (loading scene, creating renderer, etc.) I've hacked a simple cust
 
 You can see the full results here: [Download the full report](./Results.pdf)
 
+Playground of ingredients: [Ingredients](./Alfie.pdf)
+
 The goal was to test ReSTIR and here's the result:
 
 <table align="center" width="100%">
