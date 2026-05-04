@@ -1168,7 +1168,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         r = Reservoir().read(r_data)
 
         f = r.c_sum / r.m
-        dst[dst_ofst] = [math.sqrt(f.x), math.sqrt(f.y), math.sqrt(f.z), 1]
+        dst[dst_ofst] = [f.x, f.y, f.z, 1]
 
     # This is the method called by Blender for both final renders (F12) and
     # small preview for materials, world and lights.
@@ -1234,7 +1234,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
             return perf_counter() - start
 
         self.sampler = MISSampler(AreaLightsImportanceSampler(self.area_lights), GGXSampler(), 0.5)
-        T = 1
+        T = 4
         self.M = 5
         self.missing_reservoir_color = [0, 0, 0, 1]#[0, 1, 1, 1.0]
         self.recompute_pdf_cos_theta = True
@@ -1245,10 +1245,10 @@ class ReSTIREngine(bpy.types.RenderEngine):
         #0.04 <- 0.04 good shadows compared with Cycles
         #0.1 <- 0.04 acceptable shadows compared with Cycles
         #0.5 <- Needed to remove artefacts
-        self.spatial_distance_threshold = 0.4
+        self.spatial_distance_threshold = 0.1
         self.spatial_nors_threshold = 0.9 # <- Needed to remove artefacts
         # 0.98 # <- Good specular compared with Cycles
-        self.spatial_halfs_threshold = 0.83 # <- Good specular
+        self.spatial_halfs_threshold = 0.98 # <- Good specular
         self.spatial_shadowing_ratio = 0.0
 
         print (f"Rendering (  )...")
