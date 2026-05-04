@@ -95,7 +95,7 @@ class AreaLight:
         self.verts = [instance.matrix_world @ v.co for v in mesh.vertices]
         self.mat = self.ggx_mat_cache.get(obj.material_slots[0].material)
         k_d, k_s, k_r, k_e, k_es = self.mat
-        self.li = luminance_rec2020(k_e * k_es)
+        self.li = k_e * k_es
 
         self.area = 0.0
         self.polygons = []
@@ -770,11 +770,15 @@ class Reservoir:
             self.s = other.s
         return self
 
-    def decay(self, alpha = 0.8):
+    def decay(self, sum_decay, m_decay):
         if self.m == 0: return self
-        self.w_sum *= alpha
-        self.c_sum *= alpha
-        self.m = max(1, int(self.m * alpha))
+
+        new_m = max (1, int(self.m * m_decay))
+        m_factor = new_m / self.m
+        self.m = new_m
+        self.w_sum *= sum_decay * m_factor
+        self.c_sum *= sum_decay * m_factor
+
         return self
     
     def recompute_pdf_cos_theta(self, p, n, wo, sampler : Sampler):
@@ -832,10 +836,6 @@ class Reservoir:
                 "c_sum" : c_sum,
                 "m" : m}
 
-class ESpatialType(Enum):
-    KERNEL = 0
-    DISK = 1
-
 class ReSTIREngine(bpy.types.RenderEngine):
     # These three members are used by Blender to set up the
     # RenderEngine; define its internal name, visible name and capabilities.
@@ -859,12 +859,11 @@ class ReSTIREngine(bpy.types.RenderEngine):
     # adjusted to reflect the new values. This makes the falloff of area lights to be properly
     # light rays are used to compute the pdf for area lights
     recompute_pdf_cos_theta = True
-    spatial_type : ESpatialType = ESpatialType.DISK
-    spatial_specular_rejection = True
-    spatial_disk_radius = 5
-    spatial_disk_num = 5
-    spatial_kernel_radius = 5
-    spatial_kernel_keep_ratio = 0.0
+    spatial_radius = 5
+    spatial_num = 5
+    spatial_distance_threshold = 0.04
+    spatial_nors_threshold = 0.9
+    spatial_halfs_threshold = 0.83
 
     # stats
     rays = 0
@@ -886,6 +885,14 @@ class ReSTIREngine(bpy.types.RenderEngine):
     def __del__(self):
         # Own delete code...
         pass
+    
+    def update_render_passes(self, scene=None, render_layer=None):
+        print ("update_render_passes")
+        self.register_pass(scene, render_layer, "init", 4, 'FLOAT', 'COLOR')
+        self.register_pass(scene, render_layer, "shadow", 4, 'FLOAT', 'COLOR')
+        self.register_pass(scene, render_layer, "temporal", 4, 'FLOAT', 'COLOR')
+        self.register_pass(scene, render_layer, "spatial", 4, 'FLOAT', 'COLOR')
+
     
     def update(self, data, depsgraph):
         # Minimal required for Blender to think the engine can evaluate materials
@@ -1062,33 +1069,28 @@ class ReSTIREngine(bpy.types.RenderEngine):
         r = Reservoir().read(r_data)
 
         # Roughness similarity weight
-        if self.spatial_specular_rejection:
-            curr_k_d, curr_k_s, curr_k_r, curr_k_e, curr_k_es = m
-            if max(0, 1.0 - abs(curr_k_r - k_r) * 2.0) < 0.2:
-                return None
-            # half vector
-            r_wi, r_l_data, r_pdf, r_mis_w, r_cos_theta = r.s
+        curr_k_d, curr_k_s, curr_k_r, curr_k_e, curr_k_es = m
+        if max(0, 1.0 - abs(curr_k_r - k_r) * 2.0) < 0.2:
+            return None
+        # half vector
+        r_wi, r_l_data, r_pdf, r_mis_w, r_cos_theta = r.s
 
-            if h is not None:
-                specular_halfs_threshold = 0.83
-                halfs_dot = h.dot((r_wi+wo).normalized()) - specular_halfs_threshold
-                if halfs_dot <= 0.0: return None
-                v = halfs_dot / (1.0 - specular_halfs_threshold)
-                r.decay(pow(v, 1/4))
+        if h is not None:
+            halfs_dot = h.dot((r_wi+wo).normalized()) - self.spatial_halfs_threshold
+            if halfs_dot <= 0.0: return None
 
         # normal
-        lambert_nors_threshold = 0.9
-        dot = n.dot(nor) - lambert_nors_threshold
+        dot = n.dot(nor) - self.spatial_nors_threshold
         if dot <= 0: return None
-        #r.decay(dot / (1.0 - lambert_nors_threshold))
 
         # position
-        if (p-pos).length_squared > 0.5: return None
+        d = (p-pos).length
+        if d > self.spatial_distance_threshold: return None
 
         return r
 
     # params = (src, dst)
-    def spatial_disk_reuse(self, x, y, wo, params):
+    def spatial_reuse(self, x, y, wo, params):
         src, dst = params
         ofs = y*self.size_x+x
 
@@ -1111,8 +1113,8 @@ class ReSTIREngine(bpy.types.RenderEngine):
 
             h = (wi + wo).normalized()
 
-        for i in range (self.spatial_disk_num):
-            dx, dy = sample_disk(x, y, self.spatial_disk_radius)
+        for i in range (self.spatial_num):
+            dx, dy = sample_disk(x, y, self.spatial_radius)
             dr = self.get_spatial_matching_reservoir(wo, p, n, h, m, dx, dy, src)
             if dr is None: continue
             if random.random() < self.spatial_shadowing_ratio:
@@ -1123,48 +1125,6 @@ class ReSTIREngine(bpy.types.RenderEngine):
                 dr.c_sum *= v
 
             r.add_reseroir(dr.recompute_pdf_cos_theta(p, n, wo, self.sampler) if self.recompute_pdf_cos_theta else dr)
-
-        dst[ofs] = None if r.s is None else r.write()
-
-    # params = (src, dst)
-    def spatial_kernel_reuse(self, x, y, wo, params):
-        src, dst = params
-        ofs = y*self.size_x+x
-
-        # read gbuffer
-        gbuffer = self.gbuffer[ofs]
-        if not gbuffer: dst[ofs] = None; return
-        p, n, m = gbuffer
-
-        # skip emissive materials (area lights)
-        k_d, k_s, k_r, k_e, k_es = m
-        if k_es != 0.0: dst[ofs] = None; return
-
-
-        r = Reservoir()
-        r_data = src[ofs]
-        h = None
-        if r_data is not None:
-            r.read(r_data)
-            # half vector
-            wi, l_data, pdf, mis_w, cos_theta = r.s
-
-            h = (wi + wo).normalized()
-        
-        for dy in range(y - self.spatial_kernel_radius, y + self.spatial_kernel_radius + 1):
-            for dx in range(x - self.spatial_kernel_radius, x + self.spatial_kernel_radius + 1):
-                if dx == x and dy == y: continue
-                if self.spatial_kernel_keep_ratio != 1.0 and random.random() > self.spatial_kernel_keep_ratio: continue
-                dr = self.get_spatial_matching_reservoir(wo, p, n, h, m, dx, dy, src)
-                if dr is None: continue
-                if random.random() < self.spatial_shadowing_ratio:
-                    d_wi, d_l_data, d_pdf, d_mis_w, d_cos_theta = dr.s
-                    d_pos, d_nor, d_li, d_l = d_l_data
-                    v = self.visibility(p, d_pos)
-                    dr.w_sum *= v
-                    dr.c_sum *= v
-               
-                r.add_reseroir(dr.recompute_pdf_cos_theta(p, n, wo, self.sampler) if self.recompute_pdf_cos_theta else dr)
 
         dst[ofs] = None if r.s is None else r.write()
 
@@ -1180,7 +1140,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         if prev_r_data is None: return
 
         p_r = Reservoir().read(prev_r_data)
-        r = Reservoir().read(r_data).add_reseroir(p_r.decay())
+        r = Reservoir().read(r_data).add_reseroir(p_r.decay(0.8, 0.8))
 
         dst[ofs] = r.write()
 
@@ -1208,7 +1168,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         r = Reservoir().read(r_data)
 
         f = r.c_sum / r.m
-        dst[dst_ofst] = [f.x, f.y, f.z, 1]
+        dst[dst_ofst] = [math.sqrt(f.x), math.sqrt(f.y), math.sqrt(f.z), 1]
 
     # This is the method called by Blender for both final renders (F12) and
     # small preview for materials, world and lights.
@@ -1218,8 +1178,12 @@ class ReSTIREngine(bpy.types.RenderEngine):
         w = self.size_x = int(scene.render.resolution_x * scale)
         h = self.size_y = int(scene.render.resolution_y * scale)
 
-        color = [0.0, 0.0, 0.0, 1.0]
+        color = [0.0, 0.0, 1.0, 1.0]
         image = [color] * self.size_x * self.size_y
+
+
+        result = self.begin_result(0, 0, self.size_x, self.size_y)
+
         
         # get the camera details
         cam = self.get_camera_details()
@@ -1270,19 +1234,25 @@ class ReSTIREngine(bpy.types.RenderEngine):
             return perf_counter() - start
 
         self.sampler = MISSampler(AreaLightsImportanceSampler(self.area_lights), GGXSampler(), 0.5)
-        T = 8
+        T = 1
         self.M = 5
         self.missing_reservoir_color = [0, 0, 0, 1]#[0, 1, 1, 1.0]
         self.recompute_pdf_cos_theta = True
-        self.spatial_type = ESpatialType.KERNEL
-        self.spatial_disk_radius = 10
-        self.spatial_disk_num = 12
-        self.spatial_kernel_radius = 4
-        self.spatial_kernel_keep_ratio = 0.16
-        self.spatial_specular_rejection = True
-        self.spatial_shadowing_ratio = 0.16
+        # 5 <- spatial join percentage, specular & shadows improves but fireflies
+        # 2.5 <- better but no - more fireflies
+        self.spatial_radius = 10
+        self.spatial_num = 12
+        #0.04 <- 0.04 good shadows compared with Cycles
+        #0.1 <- 0.04 acceptable shadows compared with Cycles
+        #0.5 <- Needed to remove artefacts
+        self.spatial_distance_threshold = 0.4
+        self.spatial_nors_threshold = 0.9 # <- Needed to remove artefacts
+        # 0.98 # <- Good specular compared with Cycles
+        self.spatial_halfs_threshold = 0.83 # <- Good specular
+        self.spatial_shadowing_ratio = 0.0
 
         print (f"Rendering (  )...")
+        print (f"join rejection pos > {self.spatial_distance_threshold} nors > {self.spatial_nors_threshold} halfs > {self.spatial_halfs_threshold}")
         start = perf_counter()
 
         print (" - Generate GBuffer ...", end="", flush=True)
@@ -1291,44 +1261,56 @@ class ReSTIREngine(bpy.types.RenderEngine):
         self.rays = 0
         self.light_rays = 0
 
+        def present(src, pass_name):
+            do_pass(self.shade, (src, image))
+            layer = result.layers[0].passes[pass_name]
+            layer.rect = image
+            self.update_result(result)
+
         for i in range(T):
             print (f" - {i+1}/{T} init {self.M} {self.sampler.get_name()} ...", end="", flush=True)
             duration = do_pass(self.init_reservoir, dst)
             print (f"\t done in {get_cosmetic_duration(duration)}")
             t = dst; dst = src; src = t;
 
+            present(src, "init")
+
             print (f"\t- shadow ...", end="", flush=True)
             duration = do_pass(self.shadow, src)
             print (f"\t done in {get_cosmetic_duration(duration)}")
+
+            present (src, "shadow")
 
             print (f"\t- temporal ...", end="", flush=True)
             duration = do_pass(self.temporal_reuse, (prev, src))
             print (f"\t done in {get_cosmetic_duration(duration)}")
 
-            match self.spatial_type:
-                case ESpatialType.DISK:
-                    print (f"\t- spatial radius {self.spatial_disk_radius} samples {self.spatial_disk_num} join specular {self.spatial_specular_rejection} shadow ratio {self.spatial_shadowing_ratio} ...", end="", flush=True)
-                    duration = do_pass(self.spatial_disk_reuse, (src, dst))
-                    print (f"\t done in {get_cosmetic_duration(duration)}")
-                case ESpatialType.KERNEL:
-                    k = self.spatial_kernel_radius * 2 + 1
-                    print (f"\t- spatial {k} x {k} ratio {self.spatial_kernel_keep_ratio} ~ {int(k * k * self.spatial_kernel_keep_ratio)} join specular {self.spatial_specular_rejection} shadow ratio {self.spatial_shadowing_ratio} ...", end="", flush=True)
-                    duration = do_pass(self.spatial_kernel_reuse, (src, dst))
-                    print (f"\t done in {get_cosmetic_duration(duration)}")
+            present (src, "temporal")
+
+            print (f"\t- spatial radius {self.spatial_radius} samples {self.spatial_num} shadow ratio {self.spatial_shadowing_ratio} ...", end="", flush=True)
+            duration = do_pass(self.spatial_reuse, (src, dst))
+            print (f"\t done in {get_cosmetic_duration(duration)}")
             t = dst; dst = src; src = t;
-
             t = prev; prev = src; src = t;
+        
+            present(prev, "spatial")
 
-        print (" - shade ...", end="", flush=True)
-        duration = do_pass(self.shade, (prev, image))
-        print (f"\t done in {get_cosmetic_duration(duration)}")
+        present (prev, "Combined")
 
         # stats
         print (f"- rays {int(self.rays / T)} SPP {self.rays / (T*w*h) : .2f}")
         print (f"- light rays {int(self.light_rays / T)} SPP {self.light_rays / (T*w*h) : .2f}")
         pdf_rays = self.sampler.get_pdf_rays()
         print (f"- pdf rays {int(pdf_rays / T)} SPP {pdf_rays / (T*w*h) : .2f}")
-
+        confidence = 0
+        num_confidence = 0
+        for r_data in prev:
+            if r_data is None: continue
+            r = Reservoir().read(r_data)
+            confidence += r.m
+            num_confidence += 1
+        confidence /= T * num_confidence
+        print (f"Average M samples per pixel {confidence : .4f}")            
 
         print (f"Rendering done in {get_cosmetic_duration(perf_counter() - start)}")
         
@@ -1336,9 +1318,6 @@ class ReSTIREngine(bpy.types.RenderEngine):
         self.ggx_mat_cache = None
 
         # Here we write the pixel values to the RenderResult
-        result = self.begin_result(0, 0, self.size_x, self.size_y)
-        layer = result.layers[0].passes["Combined"]
-        layer.rect = image
         self.end_result(result)
 
     # For viewport renders, this method gets called once at the start and

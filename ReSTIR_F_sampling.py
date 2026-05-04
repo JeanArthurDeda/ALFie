@@ -963,7 +963,7 @@ class ReSTIRFSamplingEngine(bpy.types.RenderEngine):
             wi, mis_w, li, cos_theta = v
             return bdrf(wi, wo, n, m) * li * cos_theta * mis_w
       
-        # v from sample which will evaluuate f_t(v)
+        # v from sample which will evaluate f_t(v)
         def v_from_sample (s):
             wi, l_data, pdf, mis_w, cos_theta = s
             pos, nor, li, l = l_data
@@ -1071,7 +1071,7 @@ class ReSTIRFSamplingEngine(bpy.types.RenderEngine):
             if random.random() < self.spatial_shadowing_ratio:
                 d_wi, d_li, d_pos, d_cos_theta = dr.s
                 dr.w_sum *= self.visibility(p, d_pos)
-            r.add_reseroir(dr)
+            r.add_reseroir(dr.adjust_geometry(p, n))
 
         dst[ofs] = None if r.s is None else r.write()
 
@@ -1154,7 +1154,7 @@ class ReSTIRFSamplingEngine(bpy.types.RenderEngine):
         def f(r:Reservoir) -> Vector:
             wi, li, pos, cos_theta = r.s
             return bdrf(wi, wo, n, m) * li * cos_theta * r.w_sum / r.m
-        f = f(r.adjust_geometry(p, n))        
+        f = f(r)        
         dst[dst_ofst] = [f.x, f.y, f.z, 1]
 
     # This is the method called by Blender for both final renders (F12) and
@@ -1217,14 +1217,14 @@ class ReSTIRFSamplingEngine(bpy.types.RenderEngine):
             return perf_counter() - start
 
         self.sampler = AreaLightsImportanceSampler(self.area_lights)#MISSampler(AreaLightsImportanceSampler(self.area_lights), GGXSampler(), 0.75)
-        T = 4
-        self.M = 8
+        T = 12
+        self.M = 32
         self.missing_reservoir_color = [0, 0, 0, 1.0]
         self.spatial_type = ESpatialType.KERNEL
         self.spatial_disk_radius = 5
         self.spatial_disk_num = 12
         self.spatial_kernel_radius = 5
-        self.spatial_kernel_keep_ratio = 0.16
+        self.spatial_kernel_keep_ratio = 0.4
         self.spatial_specular_rejection = True
         self.spatial_shadowing_ratio = 0.01
 
