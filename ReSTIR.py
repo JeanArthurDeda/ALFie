@@ -62,12 +62,26 @@ def interp_barycentric(p0, p1, p2, u, v):
     w = 1.0 - u - v
     return p0*u + p1*v + p2*w
 
-def sample_disk(x, y, r):
-    radius = r * math.sqrt(random.uniform(0, 1))
-    angle = random.uniform(0, 2*math.pi)
-    dx = int(x + math.cos(angle) * radius)
-    dy = int(y + math.sin(angle) * radius)
-    return dx, dy
+def sample_disk(x, y, r, num, factor = 1.0 / 2.0):
+    S = []
+    for _ in range(num):
+        radius = r * math.pow(random.uniform(0, 1), factor)
+        angle = random.uniform(0, 2*math.pi)
+        dx = int(x + math.cos(angle) * radius)
+        dy = int(y + math.sin(angle) * radius)
+        S.append((dx, dy))
+    return S
+
+def sample_small_disk(sx, sy, r, num):
+    S = []
+    prob = num / int(r * r * math.pi)
+    for y in range(-r, r+1):
+        for x in range(-r, r+1):
+            if x*x+y*y>r*r:continue
+            if random.random() > prob: continue
+            S.append((sx+x, sy+y))
+    return S
+
 
 # Area light =================
 
@@ -888,10 +902,12 @@ class ReSTIREngine(bpy.types.RenderEngine):
     
     def update_render_passes(self, scene=None, render_layer=None):
         print ("update_render_passes")
-        self.register_pass(scene, render_layer, "init", 4, 'FLOAT', 'COLOR')
-        self.register_pass(scene, render_layer, "shadow", 4, 'FLOAT', 'COLOR')
-        self.register_pass(scene, render_layer, "temporal", 4, 'FLOAT', 'COLOR')
-        self.register_pass(scene, render_layer, "spatial", 4, 'FLOAT', 'COLOR')
+        self.register_pass(scene, render_layer, "init", 4, "FLOAT", "COLOR")
+        self.register_pass(scene, render_layer, "shadow", 4, "FLOAT", "COLOR")
+        self.register_pass(scene, render_layer, "temporal", 4, "FLOAT", "COLOR")
+        self.register_pass(scene, render_layer, "spatial", 4, "FLOAT", "COLOR")
+        self.register_pass(scene, render_layer, "neighbor_pos", 4, "FLOAT", "VECTOR")
+        self.register_pass(scene, render_layer, "neighbor_nors", 4, "FLOAT", "VECTOR")
 
     
     def update(self, data, depsgraph):
@@ -927,7 +943,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
             }    
         
         return ret
-        
+    
     def generate_scene (self):
         def is_area_light(obj, ggx_mat_cache):
             for slot in obj.material_slots:
@@ -1088,7 +1104,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         if d > self.spatial_distance_threshold: return None
 
         return r
-
+    
     # params = (src, dst)
     def spatial_reuse(self, x, y, wo, params):
         src, dst = params
@@ -1113,8 +1129,9 @@ class ReSTIREngine(bpy.types.RenderEngine):
 
             h = (wi + wo).normalized()
 
-        for i in range (self.spatial_num):
-            dx, dy = sample_disk(x, y, self.spatial_radius)
+        S = sample_disk(x, y, self.spatial_radius, self.spatial_num, 1.0)
+        #S = sample_small_disk(x, y, self.spatial_radius, self.spatial_num)
+        for dx, dy in S:
             dr = self.get_spatial_matching_reservoir(wo, p, n, h, m, dx, dy, src)
             if dr is None: continue
             if random.random() < self.spatial_shadowing_ratio:
@@ -1168,7 +1185,8 @@ class ReSTIREngine(bpy.types.RenderEngine):
         r = Reservoir().read(r_data)
 
         f = r.c_sum / r.m
-        dst[dst_ofst] = [f.x, f.y, f.z, 1]
+        dst[dst_ofst] = [math.sqrt(f.x), math.sqrt(f.y), math.sqrt(f.z), 1]
+        #dst[dst_ofst] = [f.x, f.y, f.z, 1]
 
     # This is the method called by Blender for both final renders (F12) and
     # small preview for materials, world and lights.
@@ -1205,6 +1223,11 @@ class ReSTIREngine(bpy.types.RenderEngine):
         dst = self.reservoirs[1]
         prev = self.reservoirs[2]
 
+        def get_wo(x, y):
+            px = (2 * (x + 0.5) / w - 1) * htx
+            py = (1 - 2 * (y + 0.5) / h) * hty
+            return-(cam_forward + cam_right * px + cam_up * py).normalized()
+
         def do_pass (pass_function, params):
             start = perf_counter()
             last_display = start
@@ -1212,9 +1235,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
             check_count = 0
             for y in range(h):
                 for x in range (w):
-                    px = (2 * (x + 0.5) / w - 1) * htx
-                    py = (1 - 2 * (y + 0.5) / h) * hty
-                    wo = -(cam_forward + cam_right * px + cam_up * py).normalized()
+                    wo = get_wo(x, y)
                     pass_function(x, y, wo, params)
 
                     check_count += 1
@@ -1248,7 +1269,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         self.spatial_distance_threshold = 0.1
         self.spatial_nors_threshold = 0.9 # <- Needed to remove artefacts
         # 0.98 # <- Good specular compared with Cycles
-        self.spatial_halfs_threshold = 0.98 # <- Good specular
+        self.spatial_halfs_threshold = 0.9#0.98 # <- Good specular
         self.spatial_shadowing_ratio = 0.0
 
         print (f"Rendering (  )...")
@@ -1260,6 +1281,121 @@ class ReSTIREngine(bpy.types.RenderEngine):
         print (f"\t done in {get_cosmetic_duration(duration)}")
         self.rays = 0
         self.light_rays = 0
+
+        def generate_neighbors_visualization (src):
+            start = perf_counter()
+            # Pos visualization
+            # red pos's dist < 0.04
+            # green pos's dist < 0.1
+            # blue pos's dist < 0.5
+            image = [color] * w * h
+            radius = self.spatial_radius
+            diameter = radius * 2 + 1
+            for y in range(h):
+                for x in range(w):
+                    col = [0, 0, 0, 0]
+                    cx = min(int (x / diameter) * diameter + radius, w-1)
+                    cy = min(int (y / diameter) * diameter + radius, h-1)
+                    ofs = cy * w + cx
+                    gbuffer = self.gbuffer[ofs]
+                    if gbuffer:
+                        p, n, m = gbuffer
+
+                        ofs = y * w + x
+                        ngbuffer = self.gbuffer[ofs]
+                        if ngbuffer:
+                            np, nn, nm = ngbuffer
+
+                            d = (p-np).length
+                            if d < 0.5: col = [0, 0, 1, 0]
+                            if d < 0.1: col = [0, 1, 0, 0]
+                            if d < 0.04: col = [1, 0, 0, 0]
+
+                    if x % diameter == 0 or y % diameter == 0: 
+                        for i in range(4): col[i] += 0.25
+
+                    image[(h-1-y)*w + x] = col
+            nx = int(w / diameter) 
+            ny = int(h / diameter)
+            for y in range(ny):
+                for x in range(nx):
+                    cx = x * diameter + radius
+                    cy = y * diameter + radius
+                    S = sample_disk (cx, cy, self.spatial_radius, self.spatial_num, 1.0)
+                    #S = sample_small_disk(cx, cy, self.spatial_radius, self.spatial_num)
+                    for sx, sy in S:
+                        if sx < 0 or sx >= w or sy < 0 or sy >= h: continue
+                        image[(h-1-sy) * w + sx][3] += 0.25
+            layer = result.layers[0].passes["neighbor_pos"]
+            layer.rect = image
+            self.update_result(result)
+
+            # nor's and half's visualization
+            # blue half's cos > 0.5
+            # green nor's cos > 0.9
+            # red half's cos > 0.98
+            # alpha nor's cos > 0.9
+            image = [color] * w * h
+            nw = int(w/10)
+            nh = int(h/10)
+            for y in range(h):
+                for x in range(w):
+                    cx = min(int (x / diameter) * diameter + radius, w-1)
+                    cy = min(int (y / diameter) * diameter + radius, h-1)
+                    cofs = cy * w + cx
+                    gbuffer = self.gbuffer[cofs]
+                    if gbuffer is None: continue
+                    p, n, m = gbuffer
+                    k_d, k_s, k_r, k_e, k_es = m
+                    if k_es != 0: 
+                        image[(h-1-y)*w + x] = [1, 1, 1, 1]
+                        continue
+
+                    ofs = y * w + x
+                    ngbuffer = self.gbuffer[ofs]
+                    if not ngbuffer: continue
+                    np, nn, nm = ngbuffer
+                    nk_d, nk_s, nk_r, nk_e, nk_es = nm
+                    if nk_es != 0: 
+                        image[(h-1-y)*w + x] = [1, 1, 1, 1]
+                        continue
+
+                    col = [0, 0, 0, 0]
+                    col[3] = 0.5 if n.dot(nn) > 0.9 else 0
+                    image[(h-1-y)*w + x] = col
+
+                    # center reservoir
+                    r_data = src[cofs]
+                    if r_data is None: continue
+                    r = Reservoir().read(r_data)
+                    wi, l_data, pdf, mis_w, cos_theta = r.s
+                    wo = get_wo(cx, cy)
+                    half = (wo + wi).normalized()
+
+                    # neighbor reservoir
+                    nr_data = src[ofs]
+                    if nr_data is None: continue
+                    nr = Reservoir().read(nr_data)
+                    nwi, nl_data, npdf, nmis_w, ncos_theta = nr.s
+                    nwo = get_wo(x, y)
+                    nhalf = (nwo + nwi).normalized()
+
+                    d = half.dot(nhalf)
+                    if d > 0.5: col[2] = 0.5
+                    if d > 0.9: col[1] = 0.5
+                    if d > 0.98: col[0] = 0.5
+
+                    image[(h-1-y)*w + x] = col
+
+            for y in range(h):
+                for x in range(w):
+                    if x % diameter == 0 or y % diameter == 0: 
+                        for i in range(4): image[(h-1-y)*w+x][i] += 0.25
+
+            layer = result.layers[0].passes["neighbor_nors"]
+            layer.rect = image
+            self.update_result(result)
+            return perf_counter() - start
 
         def present(src, pass_name):
             do_pass(self.shade, (src, image))
@@ -1286,6 +1422,11 @@ class ReSTIREngine(bpy.types.RenderEngine):
             print (f"\t done in {get_cosmetic_duration(duration)}")
 
             present (src, "temporal")
+            if i == T - 1:
+                print (f"\t- generate neighbors visualization ...", end="", flush=True)
+                duration = generate_neighbors_visualization(src)
+                print (f"\t done in {get_cosmetic_duration(duration)}")
+
 
             print (f"\t- spatial radius {self.spatial_radius} samples {self.spatial_num} shadow ratio {self.spatial_shadowing_ratio} ...", end="", flush=True)
             duration = do_pass(self.spatial_reuse, (src, dst))
@@ -1298,19 +1439,20 @@ class ReSTIREngine(bpy.types.RenderEngine):
         present (prev, "Combined")
 
         # stats
-        print (f"- rays {int(self.rays / T)} SPP {self.rays / (T*w*h) : .2f}")
-        print (f"- light rays {int(self.light_rays / T)} SPP {self.light_rays / (T*w*h) : .2f}")
-        pdf_rays = self.sampler.get_pdf_rays()
-        print (f"- pdf rays {int(pdf_rays / T)} SPP {pdf_rays / (T*w*h) : .2f}")
-        confidence = 0
-        num_confidence = 0
-        for r_data in prev:
-            if r_data is None: continue
-            r = Reservoir().read(r_data)
-            confidence += r.m
-            num_confidence += 1
-        confidence /= T * num_confidence
-        print (f"Average M samples per pixel {confidence : .4f}")            
+        if T > 0:
+            print (f"- rays {int(self.rays / T)} SPP {self.rays / (T*w*h) : .2f}")
+            print (f"- light rays {int(self.light_rays / T)} SPP {self.light_rays / (T*w*h) : .2f}")
+            pdf_rays = self.sampler.get_pdf_rays()
+            print (f"- pdf rays {int(pdf_rays / T)} SPP {pdf_rays / (T*w*h) : .2f}")
+            confidence = 0
+            num_confidence = 0
+            for r_data in prev:
+                if r_data is None: continue
+                r = Reservoir().read(r_data)
+                confidence += r.m
+                num_confidence += 1
+            confidence /= T * num_confidence
+            print (f"Average M samples per pixel {confidence : .4f}")            
 
         print (f"Rendering done in {get_cosmetic_duration(perf_counter() - start)}")
         

@@ -1217,16 +1217,16 @@ class ReSTIRFSamplingEngine(bpy.types.RenderEngine):
             return perf_counter() - start
 
         self.sampler = AreaLightsImportanceSampler(self.area_lights)#MISSampler(AreaLightsImportanceSampler(self.area_lights), GGXSampler(), 0.75)
-        T = 12
-        self.M = 32
+        T = 1
+        self.M = 5
         self.missing_reservoir_color = [0, 0, 0, 1.0]
-        self.spatial_type = ESpatialType.KERNEL
-        self.spatial_disk_radius = 5
+        self.spatial_type = ESpatialType.DISK
+        self.spatial_disk_radius = 10
         self.spatial_disk_num = 12
         self.spatial_kernel_radius = 5
         self.spatial_kernel_keep_ratio = 0.4
         self.spatial_specular_rejection = True
-        self.spatial_shadowing_ratio = 0.01
+        self.spatial_shadowing_ratio = 0.00
 
         print (f"Rendering (  )...")
         start = perf_counter()

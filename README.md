@@ -32,7 +32,7 @@ The goal was to test ReSTIR and here's the result:
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>ReSTIR DI. BDRF Lambert + GGX, 5 MIS samples (Area Lights & GGX), spatial re-use of 12 samples, 4 frames temporal accumulation. 0.86 rays per pixel (average). Denoise is missing & PDF is not recomputed - WIP</b>
+      <b>ReSTIR DI. BRDF Lambert + GGX, 5 MIS samples (Area Lights & GGX), spatial re-use of 12 samples, 4 frames temporal accumulation. 0.86 rays per pixel (average). Denoise is missing & PDF is not recomputed - WIP</b>
     </td>
   </tr>
 </table>
@@ -175,6 +175,6 @@ Temporal vs Spatial Resampling
   </tr>
 </table>
 
-Temporal resampling kicks socks off and has many advantages over spatial sampling. Since it shares the exact BDRF, Li, [V] with the main pixel, the samples are already best fit for resampling.
+Temporal resampling kicks socks off and has many advantages over spatial sampling. Since it shares the exact BRDF, Li, [V] with the main pixel, the samples are already best fit for resampling.
 
 
