@@ -875,6 +875,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
     recompute_pdf_cos_theta = True
     spatial_radius = 5
     spatial_num = 5
+    spatial_factor = 1 #1/2 - uniform disk sampling, 1 - bias towards center, 2 - larger bias
     spatial_distance_threshold = 0.04
     spatial_nors_threshold = 0.9
     spatial_halfs_threshold = 0.83
@@ -1129,7 +1130,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
 
             h = (wi + wo).normalized()
 
-        S = sample_disk(x, y, self.spatial_radius, self.spatial_num, 1.0)
+        S = sample_disk(x, y, self.spatial_radius, self.spatial_num, self.spatial_factor)
         #S = sample_small_disk(x, y, self.spatial_radius, self.spatial_num)
         for dx, dy in S:
             dr = self.get_spatial_matching_reservoir(wo, p, n, h, m, dx, dy, src)
@@ -1263,6 +1264,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         # 2.5 <- better but no - more fireflies
         self.spatial_radius = 10
         self.spatial_num = 12
+        self.spatial_factor = 1 #1/2 - uniform disk sampling, 1 - bias towards center, 2 - larger bias
         #0.04 <- 0.04 good shadows compared with Cycles
         #0.1 <- 0.04 acceptable shadows compared with Cycles
         #0.5 <- Needed to remove artefacts
@@ -1321,7 +1323,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
                 for x in range(nx):
                     cx = x * diameter + radius
                     cy = y * diameter + radius
-                    S = sample_disk (cx, cy, self.spatial_radius, self.spatial_num, 1.0)
+                    S = sample_disk (cx, cy, self.spatial_radius, self.spatial_num, self.spatial_factor)
                     #S = sample_small_disk(cx, cy, self.spatial_radius, self.spatial_num)
                     for sx, sy in S:
                         if sx < 0 or sx >= w or sy < 0 or sy >= h: continue
