@@ -37,6 +37,9 @@ The goal was to test ReSTIR and here's the result:
   </tr>
 </table>
 
+### Futuristic mumble
+Dare to dream about an universe where MIS(Area, GGX) is uniform as lighting would be solved. All shaders would be replaced by a single warp.
+
 ## Direct Sampling - Uniform Sampling
 Rays are sent from every pixel following a solid angle uniform sampling, and when they hit an area light, the light contribution is considered.
 
