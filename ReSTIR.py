@@ -795,50 +795,6 @@ class Reservoir:
 
         return self
     
-    def recompute_pdf_cos_theta(self, p, n, wo, sampler : Sampler):
-        if self.s is None: return self
-        wi, l_data, pdf, mis_w, cos_theta = self.s
-        if cos_theta == 0.0: return self
-        pos, nor, li, l = l_data
-        
-        wi = (pos-p).normalized()
-        new_cos_theta = max(0, n.dot(wi))
-        new_pdf = sampler.pdf (p, n, wo, wi)
-        # Some samplers such as MIS and RIS don't supoort recomputation of pdf
-        new_pdf = pdf if new_pdf is None or new_pdf == 0.0 else new_pdf
-
-        self.c_sum *= (new_cos_theta / cos_theta) * (pdf / new_pdf)
-        self.w_sum = luminance_rec2020(self.c_sum)
-
-        self.s = (wi, l_data, new_pdf, mis_w, new_cos_theta)
-        
-        return self
-
-    def recompute_pdf_cos_theta_jacobian(self, p, n, d_p, wo, sampler : Sampler):
-        if self.s is None: return self
-        d_wi, l_data, pdf, mis_w, cos_theta = self.s
-        pos, nor, li, l = l_data
-
-        wi = (pos-p).normalized()
-        new_cos_theta = max(0, n.dot(wi))
-
-        # jacobian
-        d_r_sq = (pos - d_p).length_squared
-        d_cos_light = abs(nor.dot(-d_wi))
-
-        r_sq = (pos - p).length_squared
-        cos_light = abs(nor.dot(-wi))
-
-        j = (cos_light / d_cos_light) * (d_r_sq / r_sq)
-        
-        new_pdf = sampler.pdf (p, n, wo, wi) * j
-
-        self.c_sum *= (new_cos_theta / cos_theta) * (pdf / new_pdf)
-        self.w_sum = luminance_rec2020(self.c_sum)
-        self.s = (wi, l_data, new_pdf, mis_w, new_cos_theta)
-        
-        return self
-
     def debug(t):
         if t is None: return {}
         s, w_sum, c_sum, m = t
@@ -872,7 +828,6 @@ class ReSTIREngine(bpy.types.RenderEngine):
     # in combination with the orignal pdf & cos_theta the weight,color and sample are 
     # adjusted to reflect the new values. This makes the falloff of area lights to be properly
     # light rays are used to compute the pdf for area lights
-    recompute_pdf_cos_theta = True
     spatial_radius = 5
     spatial_num = 5
     spatial_factor = 1 #1/2 - uniform disk sampling, 1 - bias towards center, 2 - larger bias
@@ -1142,7 +1097,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
                 dr.w_sum *= v
                 dr.c_sum *= v
 
-            r.add_reseroir(dr.recompute_pdf_cos_theta(p, n, wo, self.sampler) if self.recompute_pdf_cos_theta else dr)
+            r.add_reseroir(dr)
 
         dst[ofs] = None if r.s is None else r.write()
 
@@ -1200,7 +1155,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         color = [0.0, 0.0, 1.0, 1.0]
         image = [color] * self.size_x * self.size_y
 
-
+        random.seed(42)
         result = self.begin_result(0, 0, self.size_x, self.size_y)
 
         
@@ -1218,7 +1173,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
         self.generate_scene()
         self.gbuffer = [None] * w * h
         self.reservoirs = [[None] * w * h for _ in range(3)] 
-        random.seed(42)
+
 
         src = self.reservoirs[0]
         dst = self.reservoirs[1]
@@ -1259,7 +1214,6 @@ class ReSTIREngine(bpy.types.RenderEngine):
         T = 4
         self.M = 5
         self.missing_reservoir_color = [0, 0, 0, 1]#[0, 1, 1, 1.0]
-        self.recompute_pdf_cos_theta = True
         # 5 <- spatial join percentage, specular & shadows improves but fireflies
         # 2.5 <- better but no - more fireflies
         self.spatial_radius = 10
