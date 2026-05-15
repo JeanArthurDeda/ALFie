@@ -614,7 +614,7 @@ void render(std::vector<tReservoir> const &src, std::vector<tGbuffer> const &gbu
         }
         if (r.m == 0.0f)
         {
-            output[i] = 0x0;
+            output[i] = 0x0ff000000;
             continue;
         }
         output[i] = (r.c_sum / r.m).saturated().color(255);
