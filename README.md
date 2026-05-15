@@ -16,10 +16,6 @@ This is a personal study of different methods of handling area lights.
 
 To skip steps (loading scene, creating renderer, etc.) I've hacked a simple custom Blender renderer in Python, which, while slower, allowed me to play around with different methods without the side-hustle of creating the base framework.
 
-You can see the full results here: [Download the full report](./Results.pdf)
-
-Playground of ingredients: [Ingredients](./Alfie.pdf)
-
 The goal was to test ReSTIR and here's the result:
 
 <table align="center" width="100%">
@@ -37,6 +33,28 @@ The goal was to test ReSTIR and here's the result:
   </tr>
 </table>
 
+Analytical and neural methods have been researched to improve spatial reservoir joining in respect to specular and shadow quality.
+
+<table>
+  <tr>
+    <td><img src="./ReservoirJoin\join_all.png" width="100%"></td>
+    <td><img src="./ReservoirJoin\join_analytic.png" width="100%"></td>
+    <td><img src="./ReservoirJoin\join_neural.png" width="100%"></td>
+  </tr>
+  <tr>
+    <td colspan="4" align="center">
+      <b>Figure 2: ReSTIR 1st spatial join of 10 reservoirs (from 64 MIS), radius 10. Left: All reservoirs joined. Middle: Analytic join based on pos's dist<0.1, nor's cos>0.9, half's cos>0.9. Right: Neural join with 11x64x64x1 MLP 4,993 parameters.</b>
+    </td>
+  </tr>
+</table>
+
+Both the analytical and the neural method will forward output sharp specular in the reservoir re-using pipeline. No denoiser was used.
+
+You can see the full results here: [Download the full report](./Results.pdf)
+
+Playground of ingredients: [Ingredients](./Alfie.pdf)
+
+
 ### Futuristic mumble
 Dare to dream about an universe where MIS(Area, GGX) is uniform as lighting would be solved. All shaders would be replaced by a single warp.
 
@@ -52,7 +70,7 @@ Rays are sent from every pixel following a solid angle uniform sampling, and whe
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 1: (Potato) Uniform sampling results across 1, 50, 128 and 256 rays per pixel</b>
+      <b>Figure 3: (Potato) Uniform sampling results across 1, 50, 128 and 256 rays per pixel</b>
     </td>
   </tr>
 </table>
@@ -71,7 +89,7 @@ Rays are distributed via a cosine PDF which, in combination with Lambertian BRDF
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 2: Cosine sampling results across 1, 50, 128 and 256 rays per pixel</b>
+      <b>Figure 4: Cosine sampling results across 1, 50, 128 and 256 rays per pixel</b>
     </td>
   </tr>
 </table>
@@ -88,7 +106,7 @@ Rays are distributed towards area lights via an area light weight. The PDF is co
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 3: Area lights importance sampling results across 1, 50, 128 and 256 rays per pixel</b>
+      <b>Figure 5: Area lights importance sampling results across 1, 50, 128 and 256 rays per pixel</b>
     </td>
   </tr>
 </table>
@@ -107,7 +125,7 @@ Since area lights sampling is the workhorse, the cosine sampling contribution is
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 4: MIS sampling results across 1, 50, 128 and 256 rays per pixel</b>
+      <b>Figure 6: MIS sampling results across 1, 50, 128 and 256 rays per pixel</b>
     </td>
   </tr>
 </table>
@@ -127,7 +145,7 @@ Even with this potato implementation, merging temporal and spatial samples with 
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 5: ReSTIR sampling merging 8 temporal samples with 0x0 spatial kernel, 7x7 spatial kernel, and 15x15 spatial kernel</b>
+      <b>Figure 7: ReSTIR sampling merging 8 temporal samples with 0x0 spatial kernel, 7x7 spatial kernel, and 15x15 spatial kernel</b>
     </td>
   </tr>
 </table>
@@ -143,7 +161,7 @@ Russian Roullete for spatial merging improves performance, removes radiance spot
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 6: ReSTIR spatial sample drops: 0%, 25%, 50%, 90%</b>
+      <b>Figure 8: ReSTIR spatial sample drops: 0%, 25%, 50%, 90%</b>
     </td>
   </tr>
 </table>
@@ -157,7 +175,7 @@ Reusing PDF and cos(theta)
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 7: Left: Re-using PDF and cos(theta), Right: Recomputation of PDF and cos(theta) for each historical sample</b>
+      <b>Figure 9: Left: Re-using PDF and cos(theta), Right: Recomputation of PDF and cos(theta) for each historical sample</b>
     </td>
   </tr>
 </table>
@@ -173,7 +191,7 @@ Temporal vs Spatial Resampling
   </tr>
   <tr>
     <td colspan="4" align="center">
-      <b>Figure 8: Left: Temporal resampling only (50 samples), Right: Spatial resampling with visibilty recomputed (50 samples)</b>
+      <b>Figure 10: Left: Temporal resampling only (50 samples), Right: Spatial resampling with visibilty recomputed (50 samples)</b>
     </td>
   </tr>
 </table>
