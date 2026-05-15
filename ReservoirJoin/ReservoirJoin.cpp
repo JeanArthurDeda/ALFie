@@ -900,18 +900,22 @@ int main()
     // Analitic
     printf("all reservoirs join.\n");
     auto dst_reservoirs = src_reservoirs;
+    auto num_joins = 0;
     spatial(setup, src_reservoirs, gbuffer, dst_reservoirs, join_radius, join_num,
-        [&s = setup](i32 const dst_ofs, tReservoir& dst_r, tGbuffer const& dst_g, i32 const src_ofs, tReservoir const& src_r, tGbuffer const& src_g)
+        [&s = setup, &num_joins](i32 const dst_ofs, tReservoir& dst_r, tGbuffer const& dst_g, i32 const src_ofs, tReservoir const& src_r, tGbuffer const& src_g)
         {
             dst_r += src_r;
+            num_joins++;
         });
     render(setup, dst_reservoirs, gbuffer, "join_all.png");
+    printf("num joins: %d\n", num_joins);
 
     // Analitic
     printf("analytic reservoirs join.\n");
     dst_reservoirs = src_reservoirs;
+    num_joins = 0;
     spatial(setup, src_reservoirs, gbuffer, dst_reservoirs, join_radius, join_num,
-        [&s = setup](i32 const dst_ofs, tReservoir& dst_r, tGbuffer const& dst_g, i32 const src_ofs, tReservoir const& src_r, tGbuffer const& src_g)
+        [&s = setup, &num_joins](i32 const dst_ofs, tReservoir& dst_r, tGbuffer const& dst_g, i32 const src_ofs, tReservoir const& src_r, tGbuffer const& src_g)
         {
             auto const dst_wo = (s.cam_pos - dst_g.p).normalized();
             auto const src_wo = (s.cam_pos - src_g.p).normalized();
@@ -919,20 +923,22 @@ int main()
             auto const src_h = (src_r.s.wi + src_wo).normalized();
 
             //if (max(0.0f, 1.0f - abs(dst_g.k_r - src_g.k_r) * 2.0f) < 0.2f) return;
-            if ((dst_g.p - src_g.p).length() > 0.1f) return;
+            if ((dst_g.p - src_g.p).length() > 0.04f) return;
             if ((dst_g.n | src_g.n) < 0.9f) return;
-            if ((dst_h | src_h) < 0.83f) return;
-            
-            
+            if ((dst_h | src_h) < 0.98f) return;
+
             dst_r += src_r;
+            num_joins++;
         });
     render(setup, dst_reservoirs, gbuffer, "join_analytic.png");
+    printf("num joins: %d\n", num_joins);
 
     // neural
     printf("neural reservoirs join.\n");
+    num_joins = 0;
     dst_reservoirs = src_reservoirs;
     spatial(setup, src_reservoirs, gbuffer, dst_reservoirs, join_radius, join_num,
-        [&s = setup, &model](i32 const dst_ofs, tReservoir& dst_r, tGbuffer const& dst_g, i32 const src_ofs, tReservoir const& src_r, tGbuffer const& src_g)
+        [&s = setup, &model, &num_joins](i32 const dst_ofs, tReservoir& dst_r, tGbuffer const& dst_g, i32 const src_ofs, tReservoir const& src_r, tGbuffer const& src_g)
         {
             auto const dst_wo = (s.cam_pos - dst_g.p).normalized();
             auto const src_wo = (s.cam_pos - src_g.p).normalized();
@@ -951,8 +957,10 @@ int main()
             if (r < 0.05f) return;
 
             dst_r += src_r;
+            num_joins++;
         });
     render(setup, dst_reservoirs, gbuffer, "join_neural.png");
+    printf("num joins: %d\n", num_joins);
 
     return 0x0;
 }
