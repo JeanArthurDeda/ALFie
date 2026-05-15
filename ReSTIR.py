@@ -5,6 +5,7 @@ import bpy
 import array
 import math
 import random
+import json
 from abc import ABC, abstractmethod
 from mathutils import Vector, Matrix
 from time import perf_counter
@@ -834,6 +835,7 @@ class ReSTIREngine(bpy.types.RenderEngine):
     spatial_distance_threshold = 0.04
     spatial_nors_threshold = 0.9
     spatial_halfs_threshold = 0.83
+    json_export_folder = None
 
     # stats
     rays = 0
@@ -1227,6 +1229,23 @@ class ReSTIREngine(bpy.types.RenderEngine):
         # 0.98 # <- Good specular compared with Cycles
         self.spatial_halfs_threshold = 0.9#0.98 # <- Good specular
         self.spatial_shadowing_ratio = 0.0
+        self.json_export_folder = None #"c:/Dev/ALFie/output" # <-- For neural joining study
+
+        if self.json_export_folder is not None:
+            json_config = {
+                "w" : w,
+                "h" : h,
+                "cam_fov_rad" : cam_fov_rad,
+                "cam_pos" : tuple(cam_pos),
+                "cam_forward" : tuple(cam_forward),
+                "cam_up" : tuple(cam_up),
+                "cam_right" : tuple(cam_right),
+                "ar" : ar,
+                "hty" : hty,
+                "htx" : htx,
+            }
+            with open(self.json_export_folder + "/config.json", 'w') as f:
+                json.dump(json_config, f, indent=2)
 
         print (f"Rendering (  )...")
         print (f"join rejection pos > {self.spatial_distance_threshold} nors > {self.spatial_nors_threshold} halfs > {self.spatial_halfs_threshold}")
@@ -1237,6 +1256,25 @@ class ReSTIREngine(bpy.types.RenderEngine):
         print (f"\t done in {get_cosmetic_duration(duration)}")
         self.rays = 0
         self.light_rays = 0
+
+        if self.json_export_folder is not None:
+            json_gbuffer = []
+            for g in self.gbuffer:
+                p, n, m = g
+                k_d, k_s, k_r, k_e, k_es = m
+                e = {
+                    "p" : tuple(p),
+                    "n" : tuple(n),
+                    "k_d" : tuple(k_d),
+                    "k_s" : tuple(k_s),
+                    "k_r" : k_r,
+                    "k_e" : tuple(k_e),
+                    "k_es" : k_es
+                }
+                json_gbuffer.append(e)
+            with open(self.json_export_folder + "/gbuffer.json", 'w') as f:
+                json.dump(json_gbuffer, f, indent=2)
+
 
         def generate_neighbors_visualization (src):
             start = perf_counter()
@@ -1370,6 +1408,38 @@ class ReSTIREngine(bpy.types.RenderEngine):
             print (f"\t- shadow ...", end="", flush=True)
             duration = do_pass(self.shadow, src)
             print (f"\t done in {get_cosmetic_duration(duration)}")
+
+            if self.json_export_folder is not None and i == 1:
+                json_reservoirs = []
+                for r_data in src:
+                    if r_data is None:
+                        json_reservoirs.append(None)
+                        continue
+                    r = Reservoir().read(r_data)
+                    wi, l_data, pdf, mis_w, cos_theta = r.s
+                    pos, nor, li, l = l_data
+                    el_data = {
+                        "pos" : tuple(pos), 
+                        "nor" : tuple(nor), 
+                        "li" : tuple(li)
+                    }
+                    es = {
+                        "wi": tuple(wi),
+                        "l_data" : el_data,
+                        "pdf" : pdf, 
+                        "mis_w" : mis_w, 
+                        "cos_theta" : cos_theta
+                    }
+                    e = {
+                        "s" : es,
+                        "w_sum": r.w_sum,
+                        "c_sun": tuple(r.c_sum),
+                        "m" : r.m
+                    }
+                    json_reservoirs.append(e)
+                with open(self.json_export_folder + "/reservoirs.json", 'w') as f:
+                    json.dump(json_reservoirs, f, indent=2)
+
 
             present (src, "shadow")
 
