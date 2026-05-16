@@ -33,7 +33,7 @@ The goal was to test ReSTIR and here's the result:
   </tr>
 </table>
 
-To improve shadow and spcular quality during spatial phase analytical and neural methods have been researched.
+To improve shadow and specular quality during spatial phase analytical and neural joining methods have been considered.
 
 <table>
   <tr>
