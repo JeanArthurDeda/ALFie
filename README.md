@@ -33,7 +33,7 @@ The goal was to test ReSTIR and here's the result:
   </tr>
 </table>
 
-Analytical and neural methods have been researched to improve spatial reservoir joining in respect to specular and shadow quality.
+To improve shadow and spcular quality during spatial phase analytical and neural methods have been researched.
 
 <table>
   <tr>
